@@ -6,3 +6,4 @@ build/
 .env
 *.bak
 .eggs/
+tests/samples/
