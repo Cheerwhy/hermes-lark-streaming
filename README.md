@@ -24,7 +24,7 @@ Inspired by [openclaw-lark](https://github.com/larksuite/openclaw-lark) and [her
 
 ---
 
-## Prerequisites
+## Requirements
 
 - Hermes Gateway with Feishu/Lark platform configured
 - `Python >= 3.11`
