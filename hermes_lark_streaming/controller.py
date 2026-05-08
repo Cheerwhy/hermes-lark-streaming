@@ -295,6 +295,12 @@ class StreamCardController:
         if session is None:
             return False
 
+        # 卡片创建失败 → 交回 gateway 正常回复
+        if session.state == FAILED:
+            _logger.info("on_completed: msg=%s state=FAILED, yielding to gateway", message_id[:12])
+            self._cleanup(message_id)
+            return False
+
         _logger.info(
             "on_completed: msg=%s has_card=%s state=%s use_cardkit=%s",
             message_id[:12], bool(session.card_msg_id), session.state, session.use_cardkit,
