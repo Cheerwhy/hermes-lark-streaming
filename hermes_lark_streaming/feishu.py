@@ -13,6 +13,8 @@ from urllib.error import URLError
 
 import lark_oapi as lark
 from lark_oapi.api.cardkit.v1 import (
+    BatchUpdateCardRequest,
+    BatchUpdateCardRequestBody,
     Card,
     ContentCardElementRequest,
     ContentCardElementRequestBody,
@@ -226,6 +228,28 @@ class FeishuClient:
         )
         resp = await self._client.cardkit.v1.card.aupdate(request)
         self._check(resp, "cardkit_update")
+
+    async def cardkit_batch_update(
+        self,
+        card_id: str,
+        actions: list[dict[str, Any]],
+        *,
+        sequence: int = 0,
+    ) -> None:
+        """局部更新 CardKit 卡片（增删改组件）."""
+        body_builder = (
+            BatchUpdateCardRequestBody.builder()
+            .sequence(sequence)
+            .actions(self._dumps(actions))
+        )
+        request = (
+            BatchUpdateCardRequest.builder()
+            .card_id(card_id)
+            .request_body(body_builder.build())
+            .build()
+        )
+        resp = await self._client.cardkit.v1.card.abatch_update(request)
+        self._check(resp, "cardkit_batch_update")
 
     async def cardkit_close_streaming(self, card_id: str, sequence: int = 0) -> None:
         """关闭 CardKit 卡片的流式模式."""

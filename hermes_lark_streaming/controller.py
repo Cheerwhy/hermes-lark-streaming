@@ -17,12 +17,14 @@ from typing import Any, Coroutine
 
 from .cardkit import (
     STREAMING_ELEMENT_ID,
+    TOOL_PANEL_ELEMENT_ID,
     build_complete_card,
     build_im_fallback_card,
     build_streaming_card,
     build_streaming_card_v2,
     optimize_markdown_style,
 )
+from .cardkit import _build_tool_panel
 from .config import Config
 from .feishu import (
     CARDKIT_CONTENT_FAILED,
@@ -62,6 +64,7 @@ class CardSession:
         "_loop",
         "guard", "image_resolver",
         "last_tool_use_update", "created_at",
+        "tool_panel_added",
     )
 
     def __init__(
@@ -94,6 +97,7 @@ class CardSession:
         )
 
         self.image_resolver: ImageResolver | None = None
+        self.tool_panel_added = False
 
 
 class StreamCardController:
@@ -238,10 +242,10 @@ class StreamCardController:
                 output="" if is_error else detail,
             )
 
-        self._schedule_card_update(session)
-
-        if session.use_cardkit and session.card_id and not session.text.display_text:
+        if session.use_cardkit and session.card_id:
             self._schedule_tool_use_status_update(session)
+        else:
+            self._schedule_card_update(session)
 
     def on_answer(self, *, message_id: str, text: str) -> None:
         """答案文本增量（流式）."""
@@ -356,7 +360,7 @@ class StreamCardController:
                 )
 
             try:
-                card = build_streaming_card_v2(show_tool_use=True)
+                card = build_streaming_card_v2(show_tool_use=False)
                 card_id = await self._client.cardkit_create(card)
                 card_msg_id = await self._client.reply_card_by_id(
                     session.message_id, card_id,
@@ -444,15 +448,31 @@ class StreamCardController:
             return
         try:
             tool_steps = session.tool_use.build_display_steps()
-            card = build_streaming_card_v2(
-                tool_steps=tool_steps,
-                elapsed_ms=session.tool_use.elapsed_ms,
-                show_tool_use=True,
+            panel = _build_tool_panel(
+                tool_steps, session.tool_use.elapsed_ms,
             )
+            if not session.tool_panel_added:
+                actions = [{
+                    "action": "add_elements",
+                    "params": {
+                        "type": "insert_before",
+                        "target_element_id": STREAMING_ELEMENT_ID,
+                        "elements": [panel],
+                    },
+                }]
+            else:
+                actions = [{
+                    "action": "update_element",
+                    "params": {
+                        "element_id": TOOL_PANEL_ELEMENT_ID,
+                        "element": panel,
+                    },
+                }]
             session.sequence += 1
-            await self._client.cardkit_update(
-                session.card_id, card, sequence=session.sequence,
+            await self._client.cardkit_batch_update(
+                session.card_id, actions, sequence=session.sequence,
             )
+            session.tool_panel_added = True
         except Exception as e:
             _logger.debug("tool use status update failed: %s", e)
 

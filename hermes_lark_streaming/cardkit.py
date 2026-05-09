@@ -9,6 +9,7 @@ from typing import Any
 _logger = logging.getLogger("hermes_lark_streaming")
 
 STREAMING_ELEMENT_ID = "streaming_content"
+TOOL_PANEL_ELEMENT_ID = "tool_panel"
 _LOADING_ELEMENT_ID = "loading_icon"
 _LOADING_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
 
@@ -215,7 +216,7 @@ def _build_tool_panel(steps: list[dict], elapsed_ms: float = 0, *, expanded: boo
     for s in steps:
         children.extend(_build_tool_step_elements(s))
 
-    return _collapsible_panel(
+    panel = _collapsible_panel(
         expanded=expanded,
         title_el={
             "tag": "plain_text",
@@ -226,6 +227,8 @@ def _build_tool_panel(steps: list[dict], elapsed_ms: float = 0, *, expanded: boo
         },
         elements=children,
     )
+    panel["element_id"] = TOOL_PANEL_ELEMENT_ID
+    return panel
 
 
 def _build_tool_step_elements(step: dict) -> list[dict]:
