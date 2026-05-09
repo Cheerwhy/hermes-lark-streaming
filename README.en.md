@@ -170,11 +170,12 @@ If a message is deleted/recalled, UnavailableGuard auto-terminates further updat
 ## CLI Commands
 
 ```bash
-python -m hermes_lark_streaming status     # Show status
-python -m hermes_lark_streaming verify     # Verify compatibility (no file changes)
-python -m hermes_lark_streaming install    # Inject hooks
-python -m hermes_lark_streaming uninstall  # Remove hooks
-python -m hermes_lark_streaming restore    # Restore original run.py from backup
+HERMES_PYTHON=~/.hermes/hermes-agent/venv/bin/python3
+$HERMES_PYTHON -m hermes_lark_streaming status     # Show status
+$HERMES_PYTHON -m hermes_lark_streaming verify     # Verify compatibility (no file changes)
+$HERMES_PYTHON -m hermes_lark_streaming install    # Inject hooks
+$HERMES_PYTHON -m hermes_lark_streaming uninstall  # Remove hooks
+$HERMES_PYTHON -m hermes_lark_streaming restore    # Restore original run.py from backup
 ```
 
 ---
@@ -203,8 +204,9 @@ hermes_lark_streaming/
 ## Uninstall
 
 ```bash
-python -m hermes_lark_streaming uninstall
-pip uninstall hermes-lark-streaming
+HERMES_PYTHON=~/.hermes/hermes-agent/venv/bin/python3
+$HERMES_PYTHON -m hermes_lark_streaming uninstall
+$HERMES_PYTHON -m pip uninstall hermes-lark-streaming
 ```
 
 ---
