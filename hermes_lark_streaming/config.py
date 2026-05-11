@@ -62,11 +62,11 @@ class Config:
         """Footer 是否显示字段标签."""
         sec = self._streaming_sec()
         footer = sec.get("footer", {})
-        return bool(footer.get("show_label", True))
+        return bool(footer.get("show_label", False))
 
     @staticmethod
     def _default_footer_fields() -> list[list[str]]:
-        return [["status", "elapsed", "model"], ["tokens", "context"]]
+        return [["status", "elapsed", "context", "model"]]
 
 
     @property

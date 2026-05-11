@@ -357,10 +357,10 @@ def _build_footer_elements(
     is_error: bool = False,
     is_aborted: bool = False,
     fields: list[list[str]] | None = None,
-    show_label: bool = True,
+    show_label: bool = False,
 ) -> list[dict]:
     if fields is None:
-        fields = [["status", "elapsed", "model"], ["tokens", "context"]]
+        fields = [["status", "elapsed", "context", "model"]]
 
     data = footer_data or {}
     en_lines: list[str] = []

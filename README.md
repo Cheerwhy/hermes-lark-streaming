@@ -97,9 +97,8 @@ streaming:
   enabled: true
   footer:
     fields:
-      - [status, elapsed, model]
-      - [tokens, context]
-    show_label: true
+      - [status, elapsed, context, model]
+    show_label: false
 ```
 
 **字段**（`footer.fields`）：二维数组，每个子数组为一行，字段间用 `·` 连接。
@@ -112,9 +111,9 @@ streaming:
 | `tokens` | Token 用量 | `↑ 1.2K ↓ 500` | `↑ 1.2K ↓ 500` |
 | `context` | 上下文窗口用量 | `Context 50K/200K (25%)` | `50K/200K (25%)` |
 
-**显示标签**（`footer.show_label`）：是否展示字段标签（如 "Elapsed"、"Context"）。默认：`true`。
+**显示标签**（`footer.show_label`）：是否展示字段标签（如 "Elapsed"、"Context"）。默认：`false`。
 
-未配置时的默认值：`fields: [[status, elapsed, model], [tokens, context]]`，`show_label: true`。
+未配置时的默认值：`fields: [[status, elapsed, context, model]]`，`show_label: false`。
 
 ---
 

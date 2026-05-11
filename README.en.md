@@ -97,9 +97,8 @@ streaming:
   enabled: true
   footer:
     fields:
-      - [status, elapsed, model]
-      - [tokens, context]
-    show_label: true
+      - [status, elapsed, context, model]
+    show_label: false
 ```
 
 **Fields** (`footer.fields`): A 2D array where each sub-array is one line, fields joined by `·`.
@@ -112,9 +111,9 @@ streaming:
 | `tokens` | Token usage | `↑ 1.2K ↓ 500` | `↑ 1.2K ↓ 500` |
 | `context` | Context window usage | `Context 50K/200K (25%)` | `50K/200K (25%)` |
 
-**Show Label** (`footer.show_label`): Whether to display field labels like "Elapsed", "Context". Default: `true`.
+**Show Label** (`footer.show_label`): Whether to display field labels like "Elapsed", "Context". Default: `false`.
 
-Default (when not configured): `fields: [[status, elapsed, model], [tokens, context]]`, `show_label: true`.
+Default (when not configured): `fields: [[status, elapsed, context, model]]`, `show_label: false`.
 
 ---
 
