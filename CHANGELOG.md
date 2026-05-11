@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.2] - 2026-05-11
+
+### 变更
+
+- 优化流式卡片打字机渲染频率（35ms/字），减少文字积压导致的突然上屏。
+- 清理流式卡片构建函数中的冗余代码。
+
+### Changes
+
+- Optimized streaming card typewriter rendering frequency (35ms/char) to reduce sudden text appearance.
+- Cleaned up redundant code in streaming card builder.
+
 ## [0.4.1] - 2026-05-11
 
 ### 变更
