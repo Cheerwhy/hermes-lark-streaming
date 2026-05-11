@@ -496,6 +496,11 @@ def build_streaming_card_v2(
         "schema": "2.0",
         "config": {
             "streaming_mode": True,
+            "streaming_config": {
+                "print_frequency_ms": {"default": 35},
+                "print_step": {"default": 1},
+                "print_strategy": "fast",
+            },
             "locales": _LOCALES,
             "summary": {
                 "content": _T["processing"][0],
