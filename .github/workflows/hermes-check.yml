@@ -1,0 +1,84 @@
+name: Hermes Compat Check
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # daily at 08:00 CST
+  push:
+    paths:
+      - 'hermes_lark_streaming/patcher.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Hermes run.py
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/gateway/run.py" -o hermes_run.py
+          if [ ! -s hermes_run.py ]; then
+            echo "::error::Failed to fetch run.py"
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install plugin
+        run: pip install -e .
+
+      - name: Run verify
+        id: verify
+        continue-on-error: true
+        run: |
+          python -c "
+          import pathlib
+          from hermes_lark_streaming.patcher import Patcher
+          p = Patcher(pathlib.Path('hermes_run.py'))
+          p.verify_target()
+          "
+
+      - name: Open issue on failure
+        if: steps.verify.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const label = 'hermes-compat';
+            const title = 'Hermes compatibility check failed';
+            const body = `The daily Hermes \`gateway/run.py\` compatibility check failed.\n\nPlease check if Hermes has updated function names or injection anchors.\n\nWorkflow run: ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+
+            // Ensure label exists
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label,
+                color: 'e99695',
+              });
+            } catch (e) {
+              // Label already exists, ignore
+            }
+
+            // Only create if no open issue with this label
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: label,
+            });
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: [label],
+              });
+            }
