@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.1] - 2026-05-11
+
+### 变更
+
+- Footer 默认布局改为单行紧凑模式（`[[status, elapsed, context, model]]`），`show_label` 默认改为 `false`。
+- 重构 README 章节，调整顺序并合并降级策略到工作原理，新增更新章节。
+
+### 新增
+
+- 新增 GitHub Actions release workflow，推送 `v*` tag 时自动从 CHANGELOG.md 提取内容创建 release。
+
+### Changed
+
+- Footer default layout changed to single-row compact mode (`[[status, elapsed, context, model]]`), `show_label` default changed to `false`.
+- Restructured README sections, merged degradation strategy into How It Works, added Update section.
+
+### Added
+
+- Add GitHub Actions release workflow that auto-creates releases from CHANGELOG.md on `v*` tag push.
+
+---
+
 ## [0.4.0] - 2026-05-10
 
 ### 重要修复
