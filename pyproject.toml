@@ -39,7 +39,7 @@ exclude = ["tests/samples"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
-ignore = ["RUF002", "RUF003", "RUF006"]
+ignore = ["RUF001", "RUF002", "RUF003", "RUF006"]
 
 [tool.ruff.format]
 quote-style = "double"

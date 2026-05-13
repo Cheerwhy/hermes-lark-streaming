@@ -1,6 +1,5 @@
 """Tests for command card functionality."""
 
-import pytest
 from hermes_lark_streaming.command_cards import (
     build_command_card,
     build_help_card,
