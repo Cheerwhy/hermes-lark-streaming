@@ -23,6 +23,7 @@ Inspired by [openclaw-lark](https://github.com/larksuite/openclaw-lark) and [her
 - **Message guard** — Auto-terminates updates when message is deleted/recalled
 - **Image resolution** — Detects markdown image references, downloads and re-uploads as Feishu img_key
 - **Abort handling** — Gracefully handles `/stop` command and message interrupts with aborted state card and automatic new session
+- **Command cards** — Native commands like `/status`, `/help`, `/commands` also rendered as interactive cards (experimental)
 - **i18n** — Built-in Chinese/English bilingual card text (status, tool panel, thinking labels, etc.) that auto-switches based on Feishu client language
 
 ---
@@ -208,6 +209,19 @@ If a message is deleted/recalled, UnavailableGuard auto-terminates further updat
 - Re-run `verify` + `install` after Hermes updates
 - The plugin complements the built-in Feishu adapter: plugin handles streaming cards, built-in adapter handles message routing
 - Only affects Feishu/Lark platform — other platforms are unaffected
+
+### Command Cards (Experimental)
+
+The plugin now supports interactive cards for native commands (`/status`, `/help`, `/commands`):
+
+- **Whitelist only**: Only the 3 commands above are supported; others still render as text
+- **Feishu only**: Command cards appear only on Feishu/Lark platform; other platforms show text
+- **Potential duplicates**: Due to architectural constraints, both card and text may briefly appear
+- **Fallback**: Automatically falls back to text response if card sending fails
+
+See [COMMAND_CARDS_ANALYSIS.md](COMMAND_CARDS_ANALYSIS.md) for technical details and architecture analysis.
+
+---
 
 ## Contributors
 
