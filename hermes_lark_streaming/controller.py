@@ -24,6 +24,8 @@ from .cardkit import (
     _downgrade_tables,
     build_complete_card,
     build_im_fallback_card,
+    build_round_tool_card,
+    build_segment_card,
     build_streaming_card,
     build_streaming_card_v2,
     optimize_markdown_style,
@@ -33,6 +35,7 @@ from .feishu import (
     CARDKIT_CONTENT_FAILED,
     CARDKIT_ELEMENT_LIMIT,
     CARDKIT_RATE_LIMITED,
+    CARDKIT_SEQUENCE_CONFLICT,
     CARDKIT_STREAMING_CLOSED,
     FeishuAPIError,
     FeishuClient,
@@ -60,7 +63,18 @@ class CardSession:
     """单条消息的卡片会话状态."""
 
     __slots__ = (
+        "_answer_card_pending",
+        "_answer_card_ready",
         "_loop",
+        "_round_tool_card_id",
+        "_round_tool_card_msg_id",
+        "_round_tool_card_pending",
+        "_round_tool_card_ready",
+        "_round_tool_card_sequence",
+        "_round_tool_card_use_cardkit",
+        "_round_tool_start_idx",
+        "_segment_lock",
+        "_segment_start",
         "card_id",
         "card_msg_id",
         "chat_id",
@@ -70,6 +84,7 @@ class CardSession:
         "guard",
         "image_resolver",
         "last_tool_use_update",
+        "linear",
         "message_id",
         "reasoning_start",
         "reasoning_text",
@@ -86,10 +101,13 @@ class CardSession:
         message_id: str,
         chat_id: str,
         loop: asyncio.AbstractEventLoop,
+        *,
+        linear: bool = False,
     ) -> None:
         self.message_id = message_id
         self.chat_id = chat_id
         self.state = IDLE
+        self.linear = linear
         self.card_msg_id: str | None = None
         self.card_id: str | None = None
         self.use_cardkit: bool = False
@@ -112,6 +130,18 @@ class CardSession:
 
         self.image_resolver: ImageResolver | None = None
         self.tool_panel_added = False
+        self._answer_card_pending = False
+        self._answer_card_ready = asyncio.Event()
+        self._segment_start = 0
+        self._segment_lock = asyncio.Lock()
+
+        self._round_tool_card_id: str | None = None
+        self._round_tool_card_msg_id: str | None = None
+        self._round_tool_card_use_cardkit = False
+        self._round_tool_card_sequence = 0
+        self._round_tool_card_pending = False
+        self._round_tool_card_ready = asyncio.Event()
+        self._round_tool_start_idx = 0
 
 
 class StreamCardController:
@@ -208,11 +238,15 @@ class StreamCardController:
         if loop is None:
             _logger.warning("no event loop available, skipping: msg=%s", message_id[:12])
             return
-        session = CardSession(message_id, chat_id, loop)
+        linear = self._cfg.linear
+        session = CardSession(message_id, chat_id, loop, linear=linear)
         self._sessions[message_id] = session
-        _logger.info("session created: msg=%s chat=%s", message_id[:12], chat_id[:12])
+        _logger.info("session created: msg=%s chat=%s linear=%s", message_id[:12], chat_id[:12], linear)
 
-        self._fire_and_forget(self._do_create_card(session), loop)
+        if linear:
+            session.state = STREAMING
+        else:
+            self._fire_and_forget(self._do_create_card(session), loop)
 
     def on_thinking(self, *, message_id: str, text: str) -> None:
         """思考内容增量."""
@@ -254,13 +288,31 @@ class StreamCardController:
 
         if status in ("running", "started", "tool.started"):
             session.tool_use.record_start(tool_name, detail)
+            if session.linear and session.tool_use._session is not None:
+                if session._round_tool_card_id or session._round_tool_card_pending:
+                    self._fire_and_forget(
+                        self._do_update_round_tool_card(session), session._loop
+                    )
+                else:
+                    session._round_tool_card_pending = True
+                    self._fire_and_forget(
+                        self._do_segment_tool_transition(session),
+                        session._loop,
+                    )
+                return
         else:
             is_error = status in ("error", "failed")
-            session.tool_use.record_end(
+            ended_idx = session.tool_use.record_end(
                 tool_name,
                 error=detail if is_error else "",
                 output="" if is_error else detail,
             )
+            if session.linear and ended_idx is not None and session.tool_use._session is not None:
+                if session._round_tool_card_id:
+                    self._fire_and_forget(
+                        self._do_update_round_tool_card(session), session._loop
+                    )
+                return
 
         if session.use_cardkit and session.card_id:
             self._schedule_tool_use_status_update(session)
@@ -285,7 +337,20 @@ class StreamCardController:
         if not answer_text:
             return
 
+        need_create = session.linear and not session.card_id and not session._answer_card_pending
+        if need_create:
+            session._segment_start = len(session.text.display_text)
+            session._answer_card_pending = True
+
         session.text.on_partial(answer_text)
+
+        if need_create:
+            if session._round_tool_card_id or session._round_tool_card_pending:
+                self._fire_and_forget(self._do_answer_transition(session), session._loop)
+            else:
+                self._fire_and_forget(self._do_create_answer_card(session), session._loop)
+            return
+
         self._schedule_card_update(session)
 
     def on_aborted(self, *, message_id: str) -> None:
@@ -326,14 +391,19 @@ class StreamCardController:
         if new_message_id not in self._sessions:
             loop = self._get_loop()
             if loop is not None:
-                session = CardSession(new_message_id, chat_id, loop)
+                linear = self._cfg.linear
+                session = CardSession(new_message_id, chat_id, loop, linear=linear)
                 self._sessions[new_message_id] = session
                 _logger.info(
-                    "on_interrupted: create new msg=%s chat=%s",
+                    "on_interrupted: create new msg=%s chat=%s linear=%s",
                     new_message_id[:12],
                     chat_id[:12],
+                    linear,
                 )
-                self._fire_and_forget(self._do_create_card(session), loop)
+                if linear:
+                    session.state = STREAMING
+                else:
+                    self._fire_and_forget(self._do_create_card(session), loop)
 
         self._interrupt_map[old_message_id] = new_message_id
         for key, val in list(self._interrupt_map.items()):
@@ -427,26 +497,7 @@ class StreamCardController:
                     on_image_resolved=lambda: self._schedule_card_update(session),
                 )
 
-            try:
-                card = build_streaming_card_v2(show_tool_use=False)
-                card_id = await self._client.cardkit_create(card)
-                card_msg_id = await self._client.reply_card_by_id(
-                    session.message_id,
-                    card_id,
-                )
-                session.card_id = card_id
-                session.card_msg_id = card_msg_id
-                session.use_cardkit = True
-                session.flush.set_throttle(CARDKIT_MS)
-            except FeishuAPIError:
-                card = build_im_fallback_card()
-                card_msg_id = await self._client.reply_card(
-                    session.message_id,
-                    card,
-                )
-                session.card_msg_id = card_msg_id
-                session.use_cardkit = False
-                session.flush.set_throttle(PATCH_MS)
+            await self._create_and_reply_card(session)
 
             session.flush.set_card_message_ready(True)
             if session.state == CREATING:
@@ -461,6 +512,24 @@ class StreamCardController:
             _logger.exception("_do_create_card failed")
             session.state = FAILED
 
+    async def _create_and_reply_card(self, session: CardSession) -> None:
+        """创建 CardKit 实体 + 回复用户消息（CardKit 优先，IM fallback）."""
+        assert self._client is not None
+        try:
+            card = build_streaming_card_v2(show_tool_use=False)
+            card_id = await self._client.cardkit_create(card)
+            card_msg_id = await self._client.reply_card_by_id(session.message_id, card_id)
+            session.card_id = card_id
+            session.card_msg_id = card_msg_id
+            session.use_cardkit = True
+            session.flush.set_throttle(CARDKIT_MS)
+        except FeishuAPIError:
+            card = build_im_fallback_card()
+            card_msg_id = await self._client.reply_card(session.message_id, card)
+            session.card_msg_id = card_msg_id
+            session.use_cardkit = False
+            session.flush.set_throttle(PATCH_MS)
+
     async def _do_update_card(self, session: CardSession) -> None:
         if session.state not in (CREATING, STREAMING):
             return
@@ -469,14 +538,16 @@ class StreamCardController:
         if session.guard.should_skip("_do_update_card"):
             return
 
-        display = session.text.display_text
-        if not session.text.is_dirty(display):
+        full_display = session.text.display_text
+        if not session.text.is_dirty(full_display):
             _logger.info(
                 "update_card skipped (not dirty): msg=%s len=%d",
                 session.message_id[:12],
-                len(display),
+                len(full_display),
             )
             return
+
+        display = full_display[session._segment_start:] if session.linear else full_display
 
         if session.image_resolver:
             display = session.image_resolver.resolve_images(display)
@@ -501,7 +572,7 @@ class StreamCardController:
                     sequence=session.sequence,
                 )
             else:
-                tool_steps = session.tool_use.build_display_steps()
+                tool_steps = [] if session.linear else session.tool_use.build_display_steps()
                 card = build_streaming_card(
                     tool_steps=tool_steps,
                     reasoning_text=session.reasoning_text if not display else "",
@@ -509,7 +580,7 @@ class StreamCardController:
                 )
                 await self._client.update_card(session.card_msg_id, card)
 
-            session.text.mark_flushed(display)
+            session.text.mark_flushed(full_display)
         except FeishuAPIError as e:
             if session.guard.terminate("_do_update_card", e):
                 return
@@ -580,6 +651,253 @@ class StreamCardController:
         except Exception as e:
             _logger.debug("tool use status update failed: %s", e, exc_info=True)
 
+    async def _do_close_answer_card(self, session: CardSession) -> None:
+        """线性模式：关闭当前回答卡片（段间分界），用已累积文本做最终更新."""
+        if not session.card_id:
+            return
+        card_id = session.card_id
+        card_msg_id = session.card_msg_id
+        use_cardkit = session.use_cardkit
+
+        full_display = session.text.display_text
+        segment_text = full_display[session._segment_start:]
+        if session.image_resolver:
+            segment_text = session.image_resolver.resolve_images(segment_text)
+
+        try:
+            assert self._client is not None
+            if use_cardkit and card_id:
+                card = build_segment_card(segment_text, has_cardkit=True)
+                session.sequence += 1
+                await self._client.cardkit_close_streaming(card_id, sequence=session.sequence)
+                session.sequence += 1
+                await self._client.cardkit_update(card_id=card_id, card=card, sequence=session.sequence)
+            elif card_msg_id:
+                card = build_segment_card(segment_text, has_cardkit=False)
+                await self._client.update_card(card_msg_id, card)
+            _logger.info(
+                "segment answer card closed: msg=%s card_id=%s len=%d",
+                session.message_id[:12],
+                (card_id or card_msg_id or "")[:12],
+                len(segment_text),
+            )
+        except Exception:
+            _logger.exception("_do_close_answer_card failed")
+            # Best-effort: try to close streaming mode so the card doesn't
+            # stay stuck in a perpetual loading state on the server side.
+            if use_cardkit and card_id and self._client:
+                try:
+                    session.sequence += 1
+                    await self._client.cardkit_close_streaming(card_id, sequence=session.sequence)
+                except Exception:
+                    _logger.debug("best-effort close_streaming also failed", exc_info=True)
+            session.card_id = None
+            session.card_msg_id = None
+            session.use_cardkit = False
+            session.flush.set_card_message_ready(False)
+            return
+
+        session.card_id = None
+        session.card_msg_id = None
+        session.use_cardkit = False
+        session.flush.set_card_message_ready(False)
+
+    async def _do_segment_tool_transition(self, session: CardSession) -> None:
+        """线性模式：回答→工具过渡 — 关闭回答卡，创建轮次工具卡."""
+        async with session._segment_lock:
+            if session._answer_card_pending:
+                try:
+                    await asyncio.wait_for(session._answer_card_ready.wait(), timeout=5.0)
+                except TimeoutError:
+                    _logger.warning("segment transition: answer card creation timed out")
+                session._answer_card_ready.clear()
+            if session.card_id:
+                await self._do_close_answer_card(session)
+            await self._do_create_round_tool_card(session)
+
+    async def _do_answer_transition(self, session: CardSession) -> None:
+        """线性模式：工具→回答过渡 — 关闭轮次工具卡，创建回答卡."""
+        async with session._segment_lock:
+            if session._round_tool_card_pending and not session._round_tool_card_id:
+                try:
+                    await asyncio.wait_for(session._round_tool_card_ready.wait(), timeout=5.0)
+                except TimeoutError:
+                    _logger.warning("answer transition: round tool card creation timed out")
+                session._round_tool_card_ready.clear()
+            if session._round_tool_card_id:
+                await self._do_close_round_tool_card(session)
+            await self._do_create_answer_card(session)
+
+    async def _do_create_round_tool_card(self, session: CardSession) -> None:
+        """线性模式：为一轮工具调用创建共享卡片."""
+        display_steps = session.tool_use.build_display_steps(session._round_tool_start_idx)
+        if not display_steps:
+            session._round_tool_card_pending = False
+            session._round_tool_card_ready.set()
+            return
+
+        try:
+            await self._ensure_init()
+            assert self._client is not None
+
+            card = build_round_tool_card(display_steps, session.tool_use.elapsed_ms)
+            card_id = await self._client.cardkit_create(card)
+            card_msg_id = await self._client.send_card_by_id(session.chat_id, card_id)
+
+            session._round_tool_card_id = card_id
+            session._round_tool_card_msg_id = card_msg_id
+            session._round_tool_card_use_cardkit = True
+            session._round_tool_card_sequence = 1
+
+            _logger.info(
+                "round tool card created: msg=%s card_id=%s steps=%d",
+                session.message_id[:12],
+                card_id[:12],
+                len(display_steps),
+            )
+        except Exception:
+            _logger.exception("_do_create_round_tool_card failed")
+        finally:
+            session._round_tool_card_pending = False
+            session._round_tool_card_ready.set()
+
+    async def _do_update_round_tool_card(self, session: CardSession) -> None:
+        """线性模式：更新轮次工具卡（新增/完成工具）."""
+        if session._round_tool_card_pending and not session._round_tool_card_id:
+            try:
+                await asyncio.wait_for(session._round_tool_card_ready.wait(), timeout=5.0)
+            except TimeoutError:
+                _logger.warning("round tool card update: creation timed out")
+                return
+            session._round_tool_card_ready.clear()
+
+        if not session._round_tool_card_id:
+            return
+
+        display_steps = session.tool_use.build_display_steps(session._round_tool_start_idx)
+        if not display_steps:
+            return
+
+        try:
+            assert self._client is not None
+            card = build_round_tool_card(display_steps, session.tool_use.elapsed_ms)
+            session._round_tool_card_sequence += 1
+            await self._client.cardkit_update(
+                card_id=session._round_tool_card_id,
+                card=card,
+                sequence=session._round_tool_card_sequence,
+            )
+            _logger.info(
+                "round tool card updated: msg=%s steps=%d seq=%d",
+                session.message_id[:12],
+                len(display_steps),
+                session._round_tool_card_sequence,
+            )
+        except FeishuAPIError as e:
+            if e.code == CARDKIT_SEQUENCE_CONFLICT:
+                _logger.info("round tool card update: sequence conflict, skipping")
+                return
+            _logger.warning("round tool card update failed: %s", e)
+        except Exception:
+            _logger.exception("_do_update_round_tool_card failed")
+
+    async def _do_close_round_tool_card(self, session: CardSession) -> None:
+        """线性模式：关闭轮次工具卡（最终更新后清除状态）."""
+        if not session._round_tool_card_id:
+            return
+
+        display_steps = session.tool_use.build_display_steps(session._round_tool_start_idx)
+        if display_steps:
+            try:
+                assert self._client is not None
+                card = build_round_tool_card(
+                    display_steps, session.tool_use.elapsed_ms, expanded=True
+                )
+                session._round_tool_card_sequence += 1
+                await self._client.cardkit_update(
+                    card_id=session._round_tool_card_id,
+                    card=card,
+                    sequence=session._round_tool_card_sequence,
+                )
+            except Exception:
+                _logger.debug("round tool card close update failed", exc_info=True)
+
+        if session.tool_use._session is not None:
+            session._round_tool_start_idx = len(session.tool_use._session.steps)
+
+        session._round_tool_card_id = None
+        session._round_tool_card_msg_id = None
+        session._round_tool_card_use_cardkit = False
+
+    async def _do_create_answer_card(self, session: CardSession) -> None:
+        """线性模式：为回答文本创建流式卡片并回复用户消息."""
+        if session.card_id:
+            session._answer_card_pending = False
+            session._answer_card_ready.set()
+            return
+
+        try:
+            await self._ensure_init()
+            assert self._client is not None
+
+            if session.image_resolver is None and self._client:
+                session.image_resolver = ImageResolver(
+                    client=self._client,
+                    on_image_resolved=lambda: self._schedule_card_update(session),
+                )
+
+            await self._create_and_reply_card(session)
+
+            session.flush.set_card_message_ready(True)
+            session.state = STREAMING
+            session._answer_card_pending = False
+            session._answer_card_ready.set()
+            _logger.info(
+                "linear answer card created: msg=%s cardkit=%s card_id=%s",
+                session.message_id[:12],
+                session.use_cardkit,
+                (session.card_id or "")[:12],
+            )
+        except Exception:
+            _logger.exception("_do_create_answer_card failed")
+            session._answer_card_pending = False
+            session._answer_card_ready.set()
+            session.state = FAILED
+            return
+
+        try:
+            # Send initial content directly (bypass FlushController to avoid
+            # reflush background tasks racing with segment close).
+            display = session.text.display_text[session._segment_start:]
+            if session.use_cardkit and session.card_id and display:
+                session.sequence += 1
+                optimized = _downgrade_tables(optimize_markdown_style(display))
+                await self._client.cardkit_stream_element(
+                    session.card_id,
+                    STREAMING_ELEMENT_ID,
+                    optimized or " ",
+                    sequence=session.sequence,
+                )
+                session.text.mark_flushed(session.text.display_text)
+                _logger.info(
+                    "update_card: msg=%s seq=%d len=%d cardkit=True",
+                    session.message_id[:12],
+                    session.sequence,
+                    len(display),
+                )
+            elif not session.use_cardkit and session.card_msg_id and display:
+                card = build_streaming_card(text=display)
+                await self._client.update_card(session.card_msg_id, card)
+                session.text.mark_flushed(session.text.display_text)
+                _logger.info(
+                    "update_card: msg=%s seq=%d len=%d cardkit=False",
+                    session.message_id[:12],
+                    0,
+                    len(display),
+                )
+        except Exception:
+            _logger.debug("initial answer card flush failed", exc_info=True)
+
     async def _do_complete(self, session: CardSession) -> bool:
         try:
             return await self.__do_complete_inner(session)
@@ -591,7 +909,25 @@ class StreamCardController:
             return False
 
         await session.flush.wait_for_flush()
+
+        if session._answer_card_pending:
+            try:
+                await asyncio.wait_for(session._answer_card_ready.wait(), timeout=5.0)
+            except TimeoutError:
+                _logger.warning("complete: answer card creation timed out")
+            session._answer_card_ready.clear()
+
         session.flush.mark_completed()
+
+        if session.linear:
+            if session._round_tool_card_pending and not session._round_tool_card_id:
+                try:
+                    await asyncio.wait_for(session._round_tool_card_ready.wait(), timeout=5.0)
+                except TimeoutError:
+                    _logger.warning("complete: round tool card creation timed out")
+                session._round_tool_card_ready.clear()
+            if session._round_tool_card_id:
+                await self._do_close_round_tool_card(session)
 
         display = session.text.display_text
         _logger.info(
@@ -614,11 +950,20 @@ class StreamCardController:
 
         is_error = session.state == FAILED
         is_aborted = session.state == ABORTED
+
+        if session.linear and not session.card_id:
+            session.state = COMPLETED
+            return True
+
+        if session.linear:
+            display = display[session._segment_start:]
+
+        tool_steps = [] if session.linear else session.tool_use.build_display_steps()
         card = build_complete_card(
             text=display,
             reasoning_text=session.reasoning_text,
             reasoning_elapsed_ms=reasoning_elapsed_ms,
-            tool_steps=session.tool_use.build_display_steps(),
+            tool_steps=tool_steps,
             tool_elapsed_ms=session.tool_use.elapsed_ms,
             footer_data=session.footer,
             has_cardkit=session.use_cardkit,

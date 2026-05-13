@@ -24,6 +24,12 @@ class Config:
         return bool(sec.get("enabled", False))
 
     @property
+    def linear(self) -> bool:
+        """线性模式：工具调用和回复顺序展示."""
+        sec = self._streaming_sec()
+        return bool(sec.get("linear", False))
+
+    @property
     def feishu_app_id(self) -> str:
         return str(self._platform_cfg().get("app_id", ""))
 

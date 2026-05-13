@@ -240,13 +240,14 @@ class ToolUseTracker:
             )
         )
 
-    def record_end(self, name: str, *, error: str = "", output: str = "") -> None:
-        """通过名字匹配最近的一个 running 步骤来结束."""
+    def record_end(self, name: str, *, error: str = "", output: str = "") -> int | None:
+        """通过名字匹配最近的一个 running 步骤来结束，返回步骤下标."""
         if self._session is None:
-            return
+            return None
         desc = _resolve_tool_descriptor(name)
         sanitizer = desc.get("sanitizer") if desc else None
-        for step in reversed(self._session.steps):
+        for idx in range(len(self._session.steps) - 1, -1, -1):
+            step = self._session.steps[idx]
             if step.name == name and step.status == "running":
                 step.status = "error" if error else "success"
                 step.error = error
@@ -256,7 +257,7 @@ class ToolUseTracker:
                     step.error_block = _build_display_block(error, "text", sanitizer=sanitizer)
                 elif output:
                     step.result_block = _build_display_block(output, "json", sanitizer=sanitizer)
-                return
+                return idx
         self._session.steps.append(
             ToolStep(
                 name=name,
@@ -269,13 +270,14 @@ class ToolUseTracker:
                 result_block=_build_display_block(output, "json", sanitizer=sanitizer) if output else None,
             )
         )
+        return None
 
-    def build_display_steps(self) -> list[dict[str, Any]]:
+    def build_display_steps(self, offset: int = 0) -> list[dict[str, Any]]:
         """构建用于卡片渲染的步骤列表 — 与 openclaw 结构对齐."""
         if self._session is None:
             return []
         steps = []
-        for s in self._session.steps:
+        for s in self._session.steps[offset:]:
             desc = _resolve_tool_descriptor(s.name)
             base_title = desc["title"] if desc else _humanize_tool_name(s.name)
             if s.elapsed_ms > 0:

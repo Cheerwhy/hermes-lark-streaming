@@ -475,6 +475,37 @@ def build_streaming_tool_use_pending_panel() -> dict[str, Any]:
     )
 
 
+def build_segment_card(text: str, *, has_cardkit: bool = True) -> dict[str, Any]:
+    """线性模式：中间段落的回答卡片（无 footer、无 reasoning、无 tool panel）."""
+    content = _downgrade_tables(optimize_markdown_style(text)) if text else " "
+    card: dict[str, Any] = {
+        "config": {"locales": _LOCALES},
+    }
+    if has_cardkit:
+        card["schema"] = "2.0"
+        card["body"] = {"elements": [{"tag": "markdown", "content": content}]}
+    else:
+        card["elements"] = [{"tag": "markdown", "content": content}]
+    return card
+
+
+def build_round_tool_card(
+    steps: list[dict[str, Any]],
+    elapsed_ms: float = 0,
+    *,
+    expanded: bool = True,
+) -> dict[str, Any]:
+    """线性模式：一轮工具调用的共享卡片（CardKit v2.0，含可折叠工具面板）."""
+    panel = _build_tool_panel(steps, elapsed_ms, expanded=expanded)
+    return {
+        "schema": "2.0",
+        "config": {
+            "locales": _LOCALES,
+        },
+        "body": {"elements": [panel]},
+    }
+
+
 def build_streaming_card_v2(
     *,
     tool_steps: list[dict] | None = None,
