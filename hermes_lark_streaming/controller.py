@@ -308,7 +308,7 @@ class StreamCardController:
                 output="" if is_error else detail,
             )
             if session.linear and ended_idx is not None and session.tool_use._session is not None:
-                if session._round_tool_card_id:
+                if session._round_tool_card_id or session._round_tool_card_pending:
                     self._fire_and_forget(
                         self._do_update_round_tool_card(session), session._loop
                     )
@@ -866,8 +866,6 @@ class StreamCardController:
             return
 
         try:
-            # Send initial content directly (bypass FlushController to avoid
-            # reflush background tasks racing with segment close).
             display = session.text.display_text[session._segment_start:]
             if session.use_cardkit and session.card_id and display:
                 session.sequence += 1
