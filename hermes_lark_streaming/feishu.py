@@ -124,6 +124,27 @@ class FeishuClient:
             return str(resp.data.message_id)
         raise FeishuAPIError("reply_card: response missing message_id")
 
+    async def send_card_to_chat(self, chat_id: str, card: dict[str, Any]) -> str:
+        """Send a standalone card to a chat (not a reply). Returns message_id."""
+        from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+        request = (
+            CreateMessageRequest.builder()
+            .receive_id_type("chat_id")
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(chat_id)
+                .msg_type("interactive")
+                .content(self._dumps(card))
+                .build()
+            )
+            .build()
+        )
+        resp = await self._client.im.v1.message.acreate(request)
+        self._check(resp, "send_card_to_chat")
+        if resp.data and resp.data.message_id:
+            return str(resp.data.message_id)
+        raise FeishuAPIError("send_card_to_chat: response missing message_id")
+
     async def reply_card_by_id(self, message_id: str, card_id: str) -> str:
         """通过 card_id 回复 CardKit 卡片消息，返回 message_id."""
         request = (

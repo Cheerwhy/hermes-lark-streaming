@@ -54,6 +54,15 @@ def _get_patcher() -> Patcher | None:
         return None
 
 
+def _get_cron_patcher():
+    from .patcher import CronPatcher, PatcherError
+    try:
+        return CronPatcher()
+    except PatcherError as e:
+        print(f"Error: {e}")
+        return None
+
+
 def _cmd_install() -> int:
     patcher = _get_patcher()
     if patcher is None:
@@ -61,23 +70,29 @@ def _cmd_install() -> int:
 
     if patcher.is_patched():
         print("Already patched.")
-        return 0
+    else:
+        print("Verifying target compatibility...")
+        try:
+            patcher.verify_target()
+        except Exception as e:
+            print(f"Verification failed: {e}")
+            return 1
+        print("Target compatible.")
 
-    print("Verifying target compatibility...")
-    try:
-        patcher.verify_target()
-    except Exception as e:
-        print(f"Verification failed: {e}")
-        return 1
-    print("Target compatible.")
+        print("Applying patch...")
+        try:
+            patcher.apply()
+        except Exception as e:
+            print(f"Patch failed: {e}")
+            return 1
+        print("Patch applied successfully.")
 
-    print("Applying patch...")
-    try:
-        patcher.apply()
-    except Exception as e:
-        print(f"Patch failed: {e}")
-        return 1
-    print("Patch applied successfully.")
+    cp = _get_cron_patcher()
+    if cp is not None and not cp.is_patched():
+        cp.verify_target()
+        cp.apply()
+        print("Cron hook applied.")
+
     return 0
 
 
@@ -88,15 +103,20 @@ def _cmd_uninstall() -> int:
 
     if not patcher.is_patched():
         print("Not patched.")
-        return 0
+    else:
+        print("Removing patch...")
+        try:
+            patcher.remove()
+        except Exception as e:
+            print(f"Remove failed: {e}")
+            return 1
+        print("Patch removed.")
 
-    print("Removing patch...")
-    try:
-        patcher.remove()
-    except Exception as e:
-        print(f"Remove failed: {e}")
-        return 1
-    print("Patch removed.")
+    cp = _get_cron_patcher()
+    if cp is not None and cp.is_patched():
+        cp.remove()
+        print("Cron hook removed.")
+
     return 0
 
 
@@ -133,6 +153,10 @@ def _cmd_status() -> int:
             label = begin.replace("# HERMES_LARK_", "").replace("_BEGIN", "").lower()
             print(f"  {label}: {'installed' if found else 'missing'}")
 
+    cp = _get_cron_patcher()
+    if cp is not None:
+        print(f"Cron hook: {'installed' if cp.is_patched() else 'not installed'}")
+
     # Check config
     from .config import Config
 
@@ -155,6 +179,12 @@ def _cmd_verify() -> int:
         print(f"Incompatible: {e}")
         return 1
     print("Compatible.")
+
+    cp = _get_cron_patcher()
+    if cp is None:
+        return 1
+    cp.verify_target()
+    print("Cron target compatible.")
     return 0
 
 

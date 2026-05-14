@@ -122,3 +122,20 @@ def on_message_interrupted(
         new_message_id=new_message_id,
         chat_id=chat_id,
     )
+
+
+@_safe_hook(default_return=False)
+def on_cron_deliver(
+    *,
+    ctrl: Any,
+    message_id: str = "",
+    platform_name: str,
+    chat_id: str,
+    content: str,
+) -> bool:
+    """[Hook 8] cron delivery — wrap as card for Feishu."""
+    return ctrl.on_cron_deliver(
+        platform_name=platform_name,
+        chat_id=chat_id,
+        content=content,
+    )

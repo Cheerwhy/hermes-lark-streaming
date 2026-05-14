@@ -12,7 +12,7 @@ _logger = logging.getLogger("hermes_lark_streaming")
 
 PREFIX = "HERMES_LARK"
 
-_HOOK_NAMES = ["START", "COMPLETE", "TOOL", "ANSWER", "THINKING", "ABORT", "INTERRUPT"]
+_HOOK_NAMES = ["START", "COMPLETE", "TOOL", "ANSWER", "THINKING", "ABORT", "INTERRUPT", "CRON_DELIVER"]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
 MK_START, MK_START_END = MARKERS[0]
@@ -22,10 +22,12 @@ MK_ANSWER, MK_ANSWER_END = MARKERS[3]
 MK_THINKING, MK_THINKING_END = MARKERS[4]
 MK_ABORT, MK_ABORT_END = MARKERS[5]
 MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[6]
+MK_CRON_DELIVER, MK_CRON_DELIVER_END = MARKERS[7]
 
 _BACKUP_SUFFIX = ".hermes_lark.bak"
 
 _RUN_PATH = Path.home() / ".hermes" / "hermes-agent" / "gateway" / "run.py"
+_CRON_PATH = Path.home() / ".hermes" / "hermes-agent" / "cron" / "scheduler.py"
 
 
 def _make_hook(indent: str, begin: str, end: str, body_lines: list[str]) -> str:
@@ -161,6 +163,26 @@ def _interrupt_hook(indent: str) -> str:
             "            new_message_id=next_message_id,",
             "            chat_id=source.chat_id,",
             "        )",
+            "except Exception:",
+            "    pass",
+        ],
+    )
+
+
+def _cron_deliver_hook(indent: str) -> str:
+    """Inject CRON_DELIVER hook after 'delivered = False', before live adapter path."""
+    return _make_hook(
+        indent,
+        MK_CRON_DELIVER,
+        MK_CRON_DELIVER_END,
+        [
+            "try:",
+            "    from hermes_lark_streaming.patch import on_cron_deliver",
+            "    if on_cron_deliver(message_id=\"\", platform_name=platform_name,",
+            "                       chat_id=chat_id,",
+            "                       content=cleaned_delivery_content):",
+            "        delivered = True",
+            "        continue",
             "except Exception:",
             "    pass",
         ],
@@ -381,3 +403,74 @@ def _safe_indent(lines: list[str], lineno: int) -> str:
         if lines[i].strip():
             return lines[i][: len(lines[i]) - len(lines[i].lstrip())]
     return ""
+
+
+class CronPatcher:
+    """Inject CRON_DELIVER hook into cron/scheduler.py's _deliver_result."""
+
+    def __init__(self, cron_path: Path = _CRON_PATH) -> None:
+        self.cron_path = cron_path
+        if not cron_path.exists():
+            raise PatcherError(f"scheduler.py not found: {cron_path}")
+
+    def is_patched(self) -> bool:
+        return MK_CRON_DELIVER in self.cron_path.read_text(encoding="utf-8")
+
+    def verify_target(self) -> None:
+        content = self.cron_path.read_text(encoding="utf-8")
+        if "delivered = False" not in content:
+            raise PatcherError(
+                "Cannot find 'delivered = False' anchor in scheduler.py"
+            )
+
+    def apply(self) -> None:
+        if self.is_patched():
+            return
+        self.verify_target()
+        self._backup()
+        content = self.cron_path.read_text(encoding="utf-8")
+        lines = content.splitlines(keepends=True)
+
+        inject_idx = None
+        for i, line in enumerate(lines):
+            if line.strip() == "delivered = False":
+                inject_idx = i
+                break
+        if inject_idx is None:
+            raise PatcherError("Cannot find 'delivered = False' anchor")
+
+        indent = "        "
+        hook = _cron_deliver_hook(indent)
+        lines[inject_idx + 1:inject_idx + 1] = hook.splitlines(keepends=True)
+        self.cron_path.write_text("".join(lines), encoding="utf-8")
+
+    def remove(self) -> None:
+        content = self.cron_path.read_text(encoding="utf-8")
+        content = _remove_block(content, MK_CRON_DELIVER, MK_CRON_DELIVER_END)
+        self.cron_path.write_text(content, encoding="utf-8")
+
+    def restore(self) -> None:
+        backup = self.cron_path.with_suffix(self.cron_path.suffix + _BACKUP_SUFFIX)
+        if not backup.exists():
+            raise PatcherError(f"No backup found: {backup}")
+        shutil.copy2(backup, self.cron_path)
+
+    def _backup(self) -> None:
+        backup = self.cron_path.with_suffix(self.cron_path.suffix + _BACKUP_SUFFIX)
+        if not backup.exists():
+            shutil.copy2(self.cron_path, backup)
+
+
+def _remove_block(content: str, begin: str, end: str) -> str:
+    lines = content.splitlines(keepends=True)
+    begin_idx = end_idx = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == begin:
+            begin_idx = i
+        if stripped == end:
+            end_idx = i
+            break
+    if begin_idx is not None and end_idx is not None:
+        return "".join(lines[:begin_idx] + lines[end_idx + 1:])
+    return content

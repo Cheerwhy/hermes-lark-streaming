@@ -396,6 +396,35 @@ class StreamCardController:
         self._fire_and_forget(self._do_complete(session), session._loop)
         return True
 
+    def on_cron_deliver(
+        self,
+        platform_name: str,
+        chat_id: str,
+        content: str,
+    ) -> bool:
+        """Wrap cron markdown content as a static CardKit card and send to chat.
+
+        Returns True if card was sent (cron skips default delivery),
+        False for non-Feishu platforms or on failure (cron falls back).
+        """
+        if platform_name.lower() not in ("feishu", "lark"):
+            return False
+        if not self.enabled or not content or not chat_id:
+            return False
+        try:
+            asyncio.run(self._send_static_card(chat_id, content))
+            return True
+        except Exception:
+            _logger.exception("on_cron_deliver failed")
+            return False
+
+    async def _send_static_card(self, chat_id: str, content: str) -> None:
+        await self._ensure_init()
+        assert self._client is not None
+        from .cardkit import build_complete_card
+        card = build_complete_card(text=content, has_cardkit=True)
+        await self._client.send_card_to_chat(chat_id, card)
+
     def _schedule_card_update(self, session: CardSession) -> None:
         if session.state == IDLE or session.state in _TERMINAL:
             return
