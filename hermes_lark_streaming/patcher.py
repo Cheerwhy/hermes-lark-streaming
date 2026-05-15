@@ -1,4 +1,4 @@
-"""AST Patcher — 在 Hermes gateway/run.py 中注入 7 处 Hook 调用."""
+"""AST Patcher — 在 Hermes gateway/run.py 中注入 8 处 Hook 调用."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ _logger = logging.getLogger("hermes_lark_streaming")
 
 PREFIX = "HERMES_LARK"
 
-_HOOK_NAMES = ["START", "COMPLETE", "TOOL", "ANSWER", "THINKING", "ABORT", "INTERRUPT"]
+_HOOK_NAMES = ["START", "COMPLETE", "TOOL", "ANSWER", "THINKING", "REASONING", "ABORT", "INTERRUPT"]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
 MK_START, MK_START_END = MARKERS[0]
@@ -20,8 +20,9 @@ MK_COMPLETE, MK_COMPLETE_END = MARKERS[1]
 MK_TOOL, MK_TOOL_END = MARKERS[2]
 MK_ANSWER, MK_ANSWER_END = MARKERS[3]
 MK_THINKING, MK_THINKING_END = MARKERS[4]
-MK_ABORT, MK_ABORT_END = MARKERS[5]
-MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[6]
+MK_REASONING, MK_REASONING_END = MARKERS[5]
+MK_ABORT, MK_ABORT_END = MARKERS[6]
+MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[7]
 
 _BACKUP_SUFFIX = ".hermes_lark.bak"
 
@@ -132,6 +133,24 @@ def _thinking_hook(indent: str) -> str:
     )
 
 
+def _reasoning_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_REASONING,
+        MK_REASONING_END,
+        [
+            "def _reasoning_cb(text):",
+            "    if text and _run_still_current():",
+            "        try:",
+            "            from hermes_lark_streaming.patch import on_reasoning_delta",
+            "            on_reasoning_delta(message_id=event_message_id, text=text)",
+            "        except Exception:",
+            "            pass",
+            "agent.reasoning_callback = _reasoning_cb",
+        ],
+    )
+
+
 def _abort_hook(indent: str) -> str:
     return _make_hook(
         indent,
@@ -227,6 +246,9 @@ class Patcher:
         if "Restart typing indicator so the user sees activity" not in content:
             raise PatcherError("Cannot find interrupt anchor in run.py — Hermes version may be incompatible")
 
+        if "agent.reasoning_config = reasoning_config" not in content:
+            raise PatcherError("Cannot find reasoning_config anchor in run.py — Hermes version may be incompatible")
+
     def apply(self) -> None:
         if self.is_patched():
             return
@@ -268,6 +290,7 @@ class Patcher:
             ("tool", "tool", _find_func_body(tree, lines, "progress_callback")),
             ("answer", "answer", _find_func_body(tree, lines, "_stream_delta_cb")),
             ("thinking", "thinking", _find_func_body(tree, lines, "_interim_assistant_cb")),
+            ("reasoning", "reasoning", _find_reasoning_site(tree, lines)),
         ]
 
         sites: list[tuple[int, str, str]] = []
@@ -286,6 +309,7 @@ class Patcher:
             "tool": _tool_hook,
             "answer": _answer_hook,
             "thinking": _thinking_hook,
+            "reasoning": _reasoning_hook,
         }
         for idx, indent, fn_name in sites:
             hook = _HOOK_FNS[fn_name](indent)
@@ -369,6 +393,13 @@ def _find_interrupt_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] 
         if "Restart typing indicator so the user sees activity" in line:
             indent = _safe_indent(lines, i)
             return i, indent
+    return None
+
+
+def _find_reasoning_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    for i, line in enumerate(lines):
+        if line.strip() == "agent.reasoning_config = reasoning_config":
+            return i + 1, _safe_indent(lines, i)
     return None
 
 

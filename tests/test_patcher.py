@@ -80,6 +80,24 @@ class TestVerify:
         with pytest.raises(PatcherError, match="Missing injection targets"):
             _patcher(p).verify_target()
 
+    def test_verify_fails_on_missing_reasoning_anchor(self, tmp_path: Path) -> None:
+        p = tmp_path / "run.py"
+        p.write_text(
+            textwrap.dedent("""\
+            async def _handle_message_with_agent(source, event):
+                self.hooks.emit("agent:end", {})
+            async def _stream_delta_cb(text):
+                pass
+            async def progress_callback(event_type):
+                pass
+            def _interim_assistant_cb(text):
+                pass
+            # Restart typing indicator so the user sees activity
+        """)
+        )
+        with pytest.raises(PatcherError, match="reasoning_config"):
+            _patcher(p).verify_target()
+
 
 class TestApplyRemove:
     def test_apply_injects_all_markers(self, run_copy: Path) -> None:

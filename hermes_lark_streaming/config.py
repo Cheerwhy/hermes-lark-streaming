@@ -24,6 +24,20 @@ class Config:
         return bool(sec.get("enabled", False))
 
     @property
+    def show_reasoning(self) -> bool:
+        """是否展示推理过程（display.feishu.show_reasoning → display.show_reasoning）."""
+        raw = self._load()
+        display = raw.get("display")
+        if not isinstance(display, dict):
+            return False
+        platforms = display.get("platforms")
+        if isinstance(platforms, dict):
+            feishu = platforms.get("feishu")
+            if isinstance(feishu, dict) and "show_reasoning" in feishu:
+                return bool(feishu["show_reasoning"])
+        return bool(display.get("show_reasoning", False))
+
+    @property
     def feishu_app_id(self) -> str:
         return str(self._platform_cfg().get("app_id", ""))
 

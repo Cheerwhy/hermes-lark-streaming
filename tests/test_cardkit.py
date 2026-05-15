@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from hermes_lark_streaming.cardkit import (
+    REASONING_ELEMENT_ID,
+    REASONING_TEXT_ELEMENT_ID,
     TOOL_PANEL_ELEMENT_ID,
     _build_footer_elements,
     _build_reasoning_panel,
@@ -256,6 +258,47 @@ class TestBuildReasoningPanel:
         title = panel["header"]["title"]["content"]
         assert "5.0s" in title
 
+    def test_expanded_true(self) -> None:
+        panel = _build_reasoning_panel("text", expanded=True)
+        assert panel["expanded"] is True
+
+    def test_expanded_default_false(self) -> None:
+        panel = _build_reasoning_panel("text")
+        assert panel["expanded"] is False
+
+    def test_element_id_set(self) -> None:
+        panel = _build_reasoning_panel("text", element_id=REASONING_ELEMENT_ID)
+        assert panel["element_id"] == REASONING_ELEMENT_ID
+
+    def test_element_id_default_none(self) -> None:
+        panel = _build_reasoning_panel("text")
+        assert "element_id" not in panel
+
+    def test_inner_markdown_has_element_id(self) -> None:
+        panel = _build_reasoning_panel("text")
+        inner = panel["elements"][0]
+        assert inner["element_id"] == REASONING_TEXT_ELEMENT_ID
+
+    def test_title_is_plain_text_grey(self) -> None:
+        panel = _build_reasoning_panel("text")
+        title = panel["header"]["title"]
+        assert title["tag"] == "plain_text"
+        assert title["text_color"] == "grey"
+        assert title["text_size"] == "notation"
+
+    def test_empty_text_shows_thinking_title(self) -> None:
+        panel = _build_reasoning_panel(" ")
+        assert "Thinking" in panel["header"]["title"]["content"]
+
+    def test_empty_string_shows_thinking_title(self) -> None:
+        panel = _build_reasoning_panel("")
+        assert "Thinking" in panel["header"]["title"]["content"]
+
+    def test_with_content_shows_thought_title(self) -> None:
+        panel = _build_reasoning_panel("reasoning here")
+        assert "Thought" in panel["header"]["title"]["content"]
+        assert "Thinking" not in panel["header"]["title"]["content"]
+
 
 # --- 数字格式化 ---
 
@@ -329,6 +372,31 @@ class TestBuildStreamingCardV2:
         card = build_streaming_card_v2(show_tool_use=False)
         assert not any(e.get("element_id") == TOOL_PANEL_ELEMENT_ID for e in card["body"]["elements"])
 
+    def test_show_reasoning_adds_panel(self) -> None:
+        card = build_streaming_card_v2(show_reasoning=True)
+        assert any(e.get("element_id") == REASONING_ELEMENT_ID for e in card["body"]["elements"])
+
+    def test_show_reasoning_default_no_panel(self) -> None:
+        card = build_streaming_card_v2()
+        assert not any(e.get("element_id") == REASONING_ELEMENT_ID for e in card["body"]["elements"])
+
+    def test_reasoning_before_tool_before_answer(self) -> None:
+        card = build_streaming_card_v2(
+            show_reasoning=True,
+            tool_steps=[_STEP_RUNNING],
+            elapsed_ms=100,
+            show_tool_use=True,
+        )
+        ids = [e.get("element_id") for e in card["body"]["elements"]]
+        reasoning_idx = ids.index(REASONING_ELEMENT_ID)
+        tool_idx = ids.index(TOOL_PANEL_ELEMENT_ID)
+        assert reasoning_idx < tool_idx
+
+    def test_reasoning_panel_expanded(self) -> None:
+        card = build_streaming_card_v2(show_reasoning=True)
+        panel = next(e for e in card["body"]["elements"] if e.get("element_id") == REASONING_ELEMENT_ID)
+        assert panel["expanded"] is True
+
 
 class TestBuildStreamingCard:
     def test_basic(self) -> None:
@@ -338,6 +406,19 @@ class TestBuildStreamingCard:
     def test_with_tool_steps(self) -> None:
         card = build_streaming_card(tool_steps=[_STEP_RUNNING], text="hello")
         assert len(card["elements"]) >= 2
+
+    def test_reasoning_shown_alongside_answer(self) -> None:
+        """旧版 'if reasoning_text and not text' 会在有 answer 时隐藏 reasoning，现已修复."""
+        card = build_streaming_card(reasoning_text="thoughts", text="answer")
+        assert any("thoughts" in str(e) for e in card["elements"])
+        assert any("answer" in str(e) for e in card["elements"])
+
+    def test_reasoning_before_tool_steps(self) -> None:
+        card = build_streaming_card(reasoning_text="thoughts", tool_steps=[_STEP_RUNNING], text="answer")
+        contents = [str(e) for e in card["elements"]]
+        reasoning_idx = next(i for i, c in enumerate(contents) if "thoughts" in c)
+        tool_idx = next(i for i, c in enumerate(contents) if TOOL_PANEL_ELEMENT_ID in c)
+        assert reasoning_idx < tool_idx
 
 
 class TestBuildImFallbackCard:
@@ -368,6 +449,16 @@ class TestBuildCompleteCard:
         card = build_complete_card(text="answer", reasoning_text="thoughts")
         elements = card.get("elements", card.get("body", {}).get("elements", []))
         assert any("thoughts" in str(e) for e in elements)
+
+    def test_reasoning_before_tool_steps_in_complete(self) -> None:
+        card = build_complete_card(
+            text="answer", reasoning_text="thoughts", tool_steps=[_STEP_SUCCESS]
+        )
+        elements = card.get("elements", card.get("body", {}).get("elements", []))
+        contents = [str(e) for e in elements]
+        reasoning_idx = next(i for i, c in enumerate(contents) if "thoughts" in c)
+        tool_idx = next(i for i, c in enumerate(contents) if TOOL_PANEL_ELEMENT_ID in c)
+        assert reasoning_idx < tool_idx
 
     def test_summary_truncated(self) -> None:
         long_text = "x" * 200

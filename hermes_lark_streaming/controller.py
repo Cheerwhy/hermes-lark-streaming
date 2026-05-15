@@ -18,6 +18,7 @@ from concurrent.futures import Future as ConcurrentFuture
 from typing import Any
 
 from .cardkit import (
+    REASONING_TEXT_ELEMENT_ID,
     STREAMING_ELEMENT_ID,
     TOOL_PANEL_ELEMENT_ID,
     _build_tool_panel,
@@ -71,6 +72,8 @@ class CardSession:
         "image_resolver",
         "last_tool_use_update",
         "message_id",
+        "reasoning_dirty",
+        "reasoning_panel_added",
         "reasoning_start",
         "reasoning_text",
         "sequence",
@@ -98,6 +101,8 @@ class CardSession:
         self.flush = FlushController(throttle_ms=PATCH_MS)
         self.reasoning_text = ""
         self.reasoning_start: float = 0.0
+        self.reasoning_dirty = False
+        self.reasoning_panel_added = False
         self.footer: dict[str, Any] = {}
         self.sequence = 1
         self._loop = loop
@@ -236,6 +241,28 @@ class StreamCardController:
             session.text.on_partial(split["answer_text"] or "")
 
         self._schedule_card_update(session)
+
+    def on_reasoning(self, *, message_id: str, text: str) -> None:
+        """Native model reasoning delta (incremental append)."""
+        if not self.enabled:
+            return
+        if not self._cfg.show_reasoning:
+            return
+        session = self._get_active_session(message_id)
+        if session is None or session.guard.should_skip("on_reasoning"):
+            return
+
+        if not session.reasoning_start:
+            session.reasoning_start = time.time()
+            _logger.info("reasoning started: msg=%s", message_id[:12])
+
+        session.reasoning_text += text
+        session.reasoning_dirty = True
+
+        if session.use_cardkit and session.card_id:
+            self._schedule_reasoning_update(session)
+        else:
+            self._schedule_card_update(session)
 
     def on_tool_update(
         self,
@@ -428,7 +455,9 @@ class StreamCardController:
                 )
 
             try:
-                card = build_streaming_card_v2(show_tool_use=False)
+                card = build_streaming_card_v2(
+                    show_tool_use=False, show_reasoning=self._cfg.show_reasoning
+                )
                 card_id = await self._client.cardkit_create(card)
                 card_msg_id = await self._client.reply_card_by_id(
                     session.message_id,
@@ -470,7 +499,7 @@ class StreamCardController:
             return
 
         display = session.text.display_text
-        if not session.text.is_dirty(display):
+        if not session.text.is_dirty(display) and not session.reasoning_dirty:
             _logger.info(
                 "update_card skipped (not dirty): msg=%s len=%d",
                 session.message_id[:12],
@@ -492,6 +521,17 @@ class StreamCardController:
         try:
             assert self._client is not None
             if session.use_cardkit and session.card_id:
+                if session.reasoning_dirty and session.reasoning_panel_added:
+                    reasoning_content = optimize_markdown_style(session.reasoning_text) or " "
+                    session.sequence += 1
+                    await self._client.cardkit_stream_element(
+                        session.card_id,
+                        REASONING_TEXT_ELEMENT_ID,
+                        reasoning_content,
+                        sequence=session.sequence,
+                    )
+                    session.reasoning_dirty = False
+
                 optimized = _downgrade_tables(optimize_markdown_style(display))
                 session.sequence += 1
                 await self._client.cardkit_stream_element(
@@ -504,12 +544,13 @@ class StreamCardController:
                 tool_steps = session.tool_use.build_display_steps()
                 card = build_streaming_card(
                     tool_steps=tool_steps,
-                    reasoning_text=session.reasoning_text if not display else "",
+                    reasoning_text=session.reasoning_text if self._cfg.show_reasoning else "",
                     text=display,
                 )
                 await self._client.update_card(session.card_msg_id, card)
 
             session.text.mark_flushed(display)
+            session.reasoning_dirty = False
         except FeishuAPIError as e:
             if session.guard.terminate("_do_update_card", e):
                 return
@@ -580,6 +621,40 @@ class StreamCardController:
         except Exception as e:
             _logger.debug("tool use status update failed: %s", e, exc_info=True)
 
+    def _schedule_reasoning_update(self, session: CardSession) -> None:
+        if not session.use_cardkit or not session.card_id:
+            return
+        if not session.reasoning_dirty:
+            return
+        session.flush.schedule_update(lambda: self._do_reasoning_update(session))
+
+    async def _do_reasoning_update(self, session: CardSession) -> None:
+        if not session.card_id or session.state in _TERMINAL:
+            return
+        if not session.reasoning_dirty:
+            return
+        try:
+            assert self._client is not None
+            content = optimize_markdown_style(session.reasoning_text) or " "
+
+            session.sequence += 1
+            _logger.info(
+                "reasoning_update: msg=%s seq=%d len=%d",
+                session.message_id[:12],
+                session.sequence,
+                len(session.reasoning_text),
+            )
+            await self._client.cardkit_stream_element(
+                session.card_id,
+                REASONING_TEXT_ELEMENT_ID,
+                content,
+                sequence=session.sequence,
+            )
+            session.reasoning_panel_added = True
+            session.reasoning_dirty = False
+        except Exception as e:
+            _logger.debug("reasoning update failed: %s", e, exc_info=True)
+
     async def _do_complete(self, session: CardSession) -> bool:
         try:
             return await self.__do_complete_inner(session)
@@ -616,7 +691,7 @@ class StreamCardController:
         is_aborted = session.state == ABORTED
         card = build_complete_card(
             text=display,
-            reasoning_text=session.reasoning_text,
+            reasoning_text=session.reasoning_text if self._cfg.show_reasoning else "",
             reasoning_elapsed_ms=reasoning_elapsed_ms,
             tool_steps=session.tool_use.build_display_steps(),
             tool_elapsed_ms=session.tool_use.elapsed_ms,

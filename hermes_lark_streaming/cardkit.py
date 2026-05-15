@@ -9,6 +9,8 @@ from typing import Any
 _logger = logging.getLogger("hermes_lark_streaming")
 
 STREAMING_ELEMENT_ID = "streaming_content"
+REASONING_ELEMENT_ID = "reasoning_content"
+REASONING_TEXT_ELEMENT_ID = "reasoning_text"
 TOOL_PANEL_ELEMENT_ID = "tool_panel"
 _LOADING_ELEMENT_ID = "loading_icon"
 _LOADING_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
@@ -31,6 +33,7 @@ _T: dict[str, tuple[str, str]] = {
     "steps": ("{} step{}", "{} 步"),
     "thinking": ("💭 **Thinking...**", "💭 **思考中...**"),
     "thought": ("Thought", "思考"),
+    "thinking_panel": ("Thinking", "思考中"),
     "thought_for": ("Thought for {}", "思考了 {}"),
     "done": ("Done.", "完成。"),
 }
@@ -333,23 +336,36 @@ def _escape_md(value: str) -> str:
     return re.sub(r"([`*_{}\[\]<>])", r"\\\1", value.replace("\\", "\\\\"))
 
 
-def _build_reasoning_panel(text: str, elapsed_ms: float = 0) -> dict:
+def _build_reasoning_panel(
+    text: str, elapsed_ms: float = 0, *, expanded: bool = False, element_id: str | None = None,
+) -> dict:
     if elapsed_ms > 0:
         d = _format_elapsed(elapsed_ms)
         en_label, zh_label = _T["thought_for"][0].format(d), _T["thought_for"][1].format(d)
+    elif not text.strip():
+        en_label, zh_label = _T["thinking_panel"]
     else:
         en_label, zh_label = _T["thought"]
-    return _collapsible_panel(
-        expanded=False,
+    panel = _collapsible_panel(
+        expanded=expanded,
         title_el={
-            "tag": "markdown",
+            "tag": "plain_text",
             "content": f"💭 {en_label}",
             "i18n_content": _i18n(f"💭 {en_label}", f"💭 {zh_label}"),
+            "text_color": "grey",
+            "text_size": "notation",
         },
-        elements=[{"tag": "markdown", "content": text, "text_size": "notation"}],
+        elements=[{
+            "tag": "markdown",
+            "content": text,
+            "text_size": "notation",
+            "element_id": REASONING_TEXT_ELEMENT_ID,
+        }],
         vertical_spacing="8px",
-        icon_position="follow_text",
     )
+    if element_id:
+        panel["element_id"] = element_id
+    return panel
 
 
 def _build_footer_elements(
@@ -480,9 +496,15 @@ def build_streaming_card_v2(
     tool_steps: list[dict] | None = None,
     elapsed_ms: float = 0,
     show_tool_use: bool = True,
+    show_reasoning: bool = False,
 ) -> dict[str, Any]:
     """CardKit 2.0 流式占位卡片 — 含工具面板 + streaming + loading 元素."""
     elements: list[dict] = []
+
+    if show_reasoning:
+        elements.append(
+            _build_reasoning_panel(" ", expanded=True, element_id=REASONING_ELEMENT_ID)
+        )
 
     if show_tool_use:
         if tool_steps:
@@ -538,10 +560,7 @@ def build_streaming_card(
     """IM PATCH 降级路径的流式更新卡片."""
     elements: list[dict] = []
 
-    if tool_steps:
-        elements.append(_build_tool_panel(tool_steps))
-
-    if reasoning_text and not text:
+    if reasoning_text:
         elements.append(
             {
                 "tag": "markdown",
@@ -552,6 +571,9 @@ def build_streaming_card(
                 ),
             }
         )
+
+    if tool_steps:
+        elements.append(_build_tool_panel(tool_steps))
 
     elements.append({"tag": "markdown", "content": _downgrade_tables(optimize_markdown_style(text)) if text else " "})
 
@@ -582,11 +604,11 @@ def build_complete_card(
     """完成态卡片 — 含 header、reasoning 面板、footer."""
     elements: list[dict] = []
 
-    if tool_steps:
-        elements.append(_build_tool_panel(tool_steps, tool_elapsed_ms, expanded=False))
-
     if reasoning_text:
         elements.append(_build_reasoning_panel(reasoning_text, reasoning_elapsed_ms))
+
+    if tool_steps:
+        elements.append(_build_tool_panel(tool_steps, tool_elapsed_ms, expanded=False))
 
     content = _downgrade_tables(optimize_markdown_style(text or _T["done"][0]))
     for chunk in _split_long_text(content):

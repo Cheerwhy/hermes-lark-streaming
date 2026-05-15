@@ -102,6 +102,13 @@ def on_thinking_delta(*, ctrl: Any, message_id: str, text: str) -> bool:
     return True
 
 
+@_safe_hook(default_return=False, log_level="debug")
+def on_reasoning_delta(*, ctrl: Any, message_id: str, text: str) -> bool:
+    """[注入点] reasoning_callback — native model reasoning delta."""
+    ctrl.on_reasoning(message_id=message_id, text=text)
+    return True
+
+
 @_safe_hook()
 def on_message_aborted(*, ctrl: Any, message_id: str) -> None:
     """[注入点 6] stale return None 前 — message.aborted."""
