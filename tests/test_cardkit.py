@@ -10,17 +10,19 @@ from hermes_lark_streaming.cardkit import (
     _build_reasoning_panel,
     _build_tool_panel,
     _compact,
-    _downgrade_tables,
     _escape_md,
-    _find_tables_outside_code_blocks,
     _format_elapsed,
     _longest_backtick_run,
-    _split_long_text,
-    _strip_invalid_image_keys,
     build_complete_card,
     build_im_fallback_card,
     build_streaming_card,
     build_streaming_card_v2,
+)
+from hermes_lark_streaming.cardkit_md import (
+    _downgrade_tables,
+    _find_tables_outside_code_blocks,
+    _split_long_text,
+    _strip_invalid_image_keys,
     optimize_markdown_style,
 )
 

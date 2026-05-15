@@ -1,12 +1,16 @@
-"""CardKit v2.0 卡片构建器 — 与 openclaw-lark 卡片结构对齐."""
+"""CardKit v2.0 卡片构建器 — i18n、元素构建、卡片组装."""
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import Any
 
-_logger = logging.getLogger("hermes_lark_streaming")
+from .cardkit_i18n import _LOCALES, _T, _i18n, _t
+from .cardkit_md import (
+    _downgrade_tables,
+    _split_long_text,
+    optimize_markdown_style,
+)
 
 STREAMING_ELEMENT_ID = "streaming_content"
 REASONING_ELEMENT_ID = "reasoning_content"
@@ -15,137 +19,7 @@ TOOL_PANEL_ELEMENT_ID = "tool_panel"
 _LOADING_ELEMENT_ID = "loading_icon"
 _LOADING_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
 
-_MAX_CARD_TABLES = 3
-_MAX_CHUNK_CHARS = 2400
 
-_LOCALES = ["zh_cn", "en_us"]
-
-_T: dict[str, tuple[str, str]] = {
-    "status_completed": ("✅ Completed", "✅ 已完成"),
-    "status_error": ("❌ Error", "❌ 出错"),
-    "status_stopped": ("🛑 Stopped", "🛑 已停止"),
-    "elapsed": ("Elapsed {}", "耗时 {}"),
-    "context": ("Context {}", "上下文 {}"),
-    "processing": ("Processing...", "处理中..."),
-    "processing_prefix": ("💭 Processing...", "💭 处理中..."),
-    "tool_use": ("Tool use", "工具执行"),
-    "tool_pending": ("🛠️ Tool use pending", "🛠️ 等待工具执行"),
-    "steps": ("{} step{}", "{} 步"),
-    "thinking": ("💭 **Thinking...**", "💭 **思考中...**"),
-    "thought": ("Thought", "思考"),
-    "thinking_panel": ("Thinking", "思考中"),
-    "thought_for": ("Thought for {}", "思考了 {}"),
-    "done": ("Done.", "完成。"),
-}
-
-
-def _i18n(en: str, zh: str) -> dict[str, str]:
-    return {"zh_cn": zh, "en_us": en}
-
-
-def _t(key: str) -> dict[str, str]:
-    """简写: _t("processing") → _i18n(*_T["processing"])。"""
-    return _i18n(*_T[key])
-
-
-def _find_tables_outside_code_blocks(text: str) -> list[tuple[int, int, str]]:
-    """查找代码块外的 markdown 表格，返回 [(start, end, raw), ...]."""
-    code_ranges: list[tuple[int, int]] = []
-    for m in re.finditer(r"```[\s\S]*?```", text):
-        code_ranges.append((m.start(), m.end()))
-
-    def _in_code(idx: int) -> bool:
-        return any(s <= idx < e for s, e in code_ranges)
-
-    results: list[tuple[int, int, str]] = []
-    for m in re.finditer(r"\|.+\|\n\|[-:| ]+\|[\s\S]*?(?=\n\n|\n(?!\|)|$)", text):
-        if not _in_code(m.start()):
-            results.append((m.start(), m.end(), m.group(0)))
-    return results
-
-
-def _downgrade_tables(text: str, limit: int = _MAX_CARD_TABLES) -> str:
-    """超限表格降级为代码块（保留内容可见但飞书不渲染为表格元素）."""
-    matches = _find_tables_outside_code_blocks(text)
-    if len(matches) <= limit:
-        return text
-    result = text
-    for start, end, raw in reversed(matches[limit:]):
-        replacement = f"```\n{raw}\n```"
-        result = result[:start] + replacement + result[end:]
-    return result
-
-
-def optimize_markdown_style(text: str) -> str:
-    """优化流式 Markdown 以适配飞书 CardKit 渲染.
-
-    1. 提取代码块用占位符保护
-    2. 标题降级: H1 -> H4, H2-H6 -> H5
-    3. 还原代码块
-    4. 压缩多余空行
-    5. 剥离无效图片 key（非 img_xxx 格式）
-    """
-    try:
-        # 1. 提取代码块
-        mark = "___CB_"
-        code_blocks: list[str] = []
-
-        def _extract(m: re.Match) -> str:
-            prefix = m.group(1) or ""
-            block = m.group(0)[len(prefix) :]
-            idx = len(code_blocks)
-            code_blocks.append(block)
-            return f"{prefix}{mark}{idx}___"
-
-        r = re.sub(r"(^|\n)(`{3,})([^\n]*)\n[\s\S]*?\n\2(?=\n|$)", _extract, text)
-
-        # 2. 标题降级（仅当存在 H1-H3 时）
-        if re.search(r"^#{1,3} ", text, re.MULTILINE):
-            r = re.sub(r"^#{2,6} (.+)$", r"##### \1", r, flags=re.MULTILINE)
-            r = re.sub(r"^# (.+)$", r"#### \1", r, flags=re.MULTILINE)
-
-        # 3. 还原代码块
-        for i, block in enumerate(code_blocks):
-            r = r.replace(f"{mark}{i}___", block)
-
-        # 4. 压缩多余空行
-        r = re.sub(r"\n{3,}", "\n\n", r)
-
-        # 5. 剥离无效图片 key
-        r = _strip_invalid_image_keys(r)
-
-        return r
-    except Exception:
-        _logger.debug("optimize_markdown_style failed", exc_info=True)
-        return text
-
-
-def _strip_invalid_image_keys(text: str) -> str:
-    if "![" not in text:
-        return text
-
-    def _replace(m: re.Match) -> str:
-        return m.group(0) if m.group(2).startswith("img_") else ""
-
-    return re.sub(r"!\[([^\]]*)\]\(([^)\s]+)\)", _replace, text)
-
-
-def _split_long_text(text: str, limit: int = _MAX_CHUNK_CHARS) -> list[str]:
-    if len(text) <= limit:
-        return [text]
-    chunks: list[str] = []
-    while text:
-        if len(text) <= limit:
-            chunks.append(text)
-            break
-        cut = text.rfind("\n\n", 0, limit)
-        if cut < limit // 2:
-            cut = text.rfind("\n", 0, limit)
-        if cut < limit // 2:
-            cut = limit
-        chunks.append(text[:cut])
-        text = text[cut:].lstrip("\n")
-    return chunks
 
 
 def _collapsible_panel(
