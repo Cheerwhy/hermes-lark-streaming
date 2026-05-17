@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import patch
 
 import pytest
@@ -255,6 +256,66 @@ class TestFencedBlock:
         assert result["fenced"].startswith("````")
 
 
+class TestBuildDisplayStepsOffset:
+    def test_offset_zero_returns_all(self) -> None:
+        tracker = ToolUseTracker()
+        tracker.record_start("read", "a.py")
+        tracker.record_end("read", output="ok")
+        tracker.record_start("exec", "cmd")
+        tracker.record_end("exec", output="done")
+        assert len(tracker.build_display_steps(offset=0)) == 2
+
+    def test_offset_skips_first(self) -> None:
+        tracker = ToolUseTracker()
+        tracker.record_start("read", "a.py")
+        tracker.record_end("read", output="ok")
+        tracker.record_start("exec", "cmd")
+        tracker.record_end("exec", output="done")
+        steps = tracker.build_display_steps(offset=1)
+        assert len(steps) == 1
+        assert steps[0]["name"] == "exec"
+
+    @pytest.mark.parametrize("offset", [2, 5])
+    def test_offset_out_of_range_returns_empty(self, offset: int) -> None:
+        tracker = ToolUseTracker()
+        tracker.record_start("read", "a.py")
+        tracker.record_end("read", output="ok")
+        tracker.record_start("exec", "cmd")
+        tracker.record_end("exec", output="done")
+        assert tracker.build_display_steps(offset=offset) == []
+
+    def test_no_session_returns_empty(self) -> None:
+        assert ToolUseTracker().build_display_steps(offset=0) == []
+
+
+class TestRecordEndReturnsIndex:
+    def test_returns_step_index(self) -> None:
+        tracker = ToolUseTracker()
+        tracker.record_start("read", "a.py")
+        assert tracker.record_end("read", output="ok") == 0
+
+    def test_returns_none_without_session(self) -> None:
+        assert ToolUseTracker().record_end("orphan", output="late") is None
+
+    def test_no_matching_start_appends(self) -> None:
+        tracker = ToolUseTracker()
+        tracker.record_start("other", "f.py")
+        idx = tracker.record_end("read", output="late result")
+        assert idx == 1
+
+    def test_multiple_steps_return_correct_index(self) -> None:
+        tracker = ToolUseTracker()
+        tracker.record_start("read", "a.py")
+        tracker.record_end("read", output="ok")
+        tracker.record_start("exec", "cmd")
+        assert tracker.record_end("exec", output="done") == 1
+
+    def test_error_step_returns_index(self) -> None:
+        tracker = ToolUseTracker()
+        tracker.record_start("exec", "cmd")
+        assert tracker.record_end("exec", error="boom") == 0
+
+
 class TestToolUseTracker:
     def test_empty_tracker(self) -> None:
         tracker = ToolUseTracker()
@@ -339,6 +400,7 @@ class TestToolUseTracker:
     def test_elapsed_ms_positive_after_start(self) -> None:
         tracker = ToolUseTracker()
         tracker.record_start("read", "f")
+        time.sleep(0.001)
         assert tracker.elapsed_ms > 0.0
 
     def test_detail_sanitized(self) -> None:

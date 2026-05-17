@@ -23,6 +23,10 @@ from .controller_mixin import (
     ABORTED,
     FAILED,
     IDLE,
+    L_ANSWER,
+    L_IDLE,
+    L_TOOL,
+    STREAMING,
     ControllerMixin,
 )
 from .feishu import (
@@ -44,7 +48,13 @@ class CardSession:
     """单条消息的卡片会话状态."""
 
     __slots__ = (
+        "_linear_lock",
+        "_linear_phase",
         "_loop",
+        "_segment_start",
+        "_tool_card_id",
+        "_tool_card_msg_id",
+        "_tool_start_idx",
         "card_id",
         "card_msg_id",
         "chat_id",
@@ -54,6 +64,7 @@ class CardSession:
         "guard",
         "image_resolver",
         "last_tool_use_update",
+        "linear",
         "message_id",
         "reasoning_dirty",
         "reasoning_panel_added",
@@ -72,10 +83,13 @@ class CardSession:
         message_id: str,
         chat_id: str,
         loop: asyncio.AbstractEventLoop,
+        *,
+        linear: bool = False,
     ) -> None:
         self.message_id = message_id
         self.chat_id = chat_id
         self.state = IDLE
+        self.linear = linear
         self.card_msg_id: str | None = None
         self.card_id: str | None = None
         self.use_cardkit: bool = False
@@ -100,6 +114,13 @@ class CardSession:
 
         self.image_resolver: ImageResolver | None = None
         self.tool_panel_added = False
+
+        self._linear_lock = asyncio.Lock()
+        self._linear_phase = L_IDLE
+        self._segment_start = 0
+        self._tool_card_id: str | None = None
+        self._tool_card_msg_id: str | None = None
+        self._tool_start_idx = 0
 
 
 class StreamCardController(ControllerMixin):
@@ -196,11 +217,15 @@ class StreamCardController(ControllerMixin):
         if loop is None:
             _logger.warning("no event loop available, skipping: msg=%s", message_id[:12])
             return
-        session = CardSession(message_id, chat_id, loop)
+        linear = self._cfg.linear
+        session = CardSession(message_id, chat_id, loop, linear=linear)
         self._sessions[message_id] = session
-        _logger.info("session created: msg=%s chat=%s", message_id[:12], chat_id[:12])
+        _logger.info("session created: msg=%s chat=%s linear=%s", message_id[:12], chat_id[:12], linear)
 
-        self._fire_and_forget(self._do_create_card(session), loop)
+        if linear:
+            session.state = STREAMING
+        else:
+            self._fire_and_forget(self._do_create_card(session), loop)
 
     def on_thinking(self, *, message_id: str, text: str) -> None:
         """思考内容增量."""
@@ -221,7 +246,12 @@ class StreamCardController(ControllerMixin):
                 session.reasoning_text = split["reasoning_text"] or ""
                 if not session.reasoning_start:
                     session.reasoning_start = time.time()
-            session.text.on_partial(split["answer_text"] or "")
+            answer_text = split["answer_text"] or ""
+            if answer_text:
+                if session.linear and session._linear_phase in (L_IDLE, L_TOOL):
+                    self._linear_enter_answer(session, answer_text)
+                    return
+                session.text.on_partial(answer_text)
 
         self._schedule_card_update(session)
 
@@ -239,13 +269,20 @@ class StreamCardController(ControllerMixin):
             session.reasoning_start = time.time()
             _logger.info("reasoning started: msg=%s", message_id[:12])
 
+        if session.linear:
+            if session._linear_phase == L_IDLE:
+                session._linear_phase = L_ANSWER
+                self._fire_and_forget(self._do_create_answer_card(session), session._loop)
+            elif session._linear_phase == L_ANSWER and session.use_cardkit and session.card_id:
+                self._schedule_reasoning_update(session)
+        else:
+            if session.use_cardkit and session.card_id:
+                self._schedule_reasoning_update(session)
+            else:
+                self._schedule_card_update(session)
+
         session.reasoning_text += text
         session.reasoning_dirty = True
-
-        if session.use_cardkit and session.card_id:
-            self._schedule_reasoning_update(session)
-        else:
-            self._schedule_card_update(session)
 
     def on_tool_update(
         self,
@@ -262,7 +299,9 @@ class StreamCardController(ControllerMixin):
         if session is None or session.guard.should_skip("on_tool_update"):
             return
 
-        if status in ("running", "started", "tool.started"):
+        is_started = status in ("running", "started", "tool.started")
+
+        if is_started:
             session.tool_use.record_start(tool_name, detail)
         else:
             is_error = status in ("error", "failed")
@@ -271,6 +310,20 @@ class StreamCardController(ControllerMixin):
                 error=detail if is_error else "",
                 output="" if is_error else detail,
             )
+
+        if session.linear:
+            if is_started:
+                if session._linear_phase == L_ANSWER:
+                    session._linear_phase = L_TOOL
+                    self._fire_and_forget(self._do_answer_to_tool(session), session._loop)
+                elif session._linear_phase == L_TOOL:
+                    self._fire_and_forget(self._do_update_tool_card(session), session._loop)
+                elif session._linear_phase == L_IDLE:
+                    session._linear_phase = L_TOOL
+                    self._fire_and_forget(self._do_create_tool_card(session), session._loop)
+            elif session._linear_phase == L_TOOL:
+                self._fire_and_forget(self._do_update_tool_card(session), session._loop)
+            return
 
         if session.use_cardkit and session.card_id:
             self._schedule_tool_use_status_update(session)
@@ -293,6 +346,10 @@ class StreamCardController(ControllerMixin):
 
         answer_text = split.get("answer_text") or strip_reasoning_tags(text)
         if not answer_text:
+            return
+
+        if session.linear:
+            self._linear_answer(session, answer_text)
             return
 
         session.text.on_partial(answer_text)
@@ -336,14 +393,19 @@ class StreamCardController(ControllerMixin):
         if new_message_id not in self._sessions:
             loop = self._get_loop()
             if loop is not None:
-                session = CardSession(new_message_id, chat_id, loop)
+                linear = self._cfg.linear
+                session = CardSession(new_message_id, chat_id, loop, linear=linear)
                 self._sessions[new_message_id] = session
                 _logger.info(
-                    "on_interrupted: create new msg=%s chat=%s",
+                    "on_interrupted: create new msg=%s chat=%s linear=%s",
                     new_message_id[:12],
                     chat_id[:12],
+                    linear,
                 )
-                self._fire_and_forget(self._do_create_card(session), loop)
+                if linear:
+                    session.state = STREAMING
+                else:
+                    self._fire_and_forget(self._do_create_card(session), loop)
 
         self._interrupt_map[old_message_id] = new_message_id
         for key, val in list(self._interrupt_map.items()):
@@ -405,6 +467,25 @@ class StreamCardController(ControllerMixin):
 
         self._fire_and_forget(self._do_complete(session), session._loop)
         return True
+
+    def _linear_enter_answer(self, session: CardSession, answer_text: str) -> None:
+        """线性模式：进入回答阶段，从 L_IDLE/L_TOOL 过渡到 L_ANSWER."""
+        prev_phase = session._linear_phase
+        session._segment_start = len(session.text.display_text)
+        session.text.on_partial(answer_text)
+        session._linear_phase = L_ANSWER
+        if prev_phase == L_TOOL:
+            self._fire_and_forget(self._do_tool_to_answer(session), session._loop)
+        else:
+            self._fire_and_forget(self._do_create_answer_card(session), session._loop)
+
+    def _linear_answer(self, session: CardSession, answer_text: str) -> None:
+        """线性模式 on_answer 路由."""
+        if session._linear_phase in (L_IDLE, L_TOOL):
+            self._linear_enter_answer(session, answer_text)
+            return
+        session.text.on_partial(answer_text)
+        self._schedule_card_update(session)
 
     def _schedule_card_update(self, session: CardSession) -> None:
         if session.state == IDLE or session.state in _TERMINAL:

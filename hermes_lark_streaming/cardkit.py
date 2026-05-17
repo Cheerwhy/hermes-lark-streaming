@@ -76,7 +76,9 @@ def _loading_element() -> dict:
     }
 
 
-def _build_tool_panel(steps: list[dict], elapsed_ms: float = 0, *, expanded: bool = True) -> dict:
+def _build_tool_panel(
+    steps: list[dict], elapsed_ms: float = 0, *, expanded: bool = True,
+) -> dict:
     en_t, zh_t = _T["tool_use"]
     en_parts, zh_parts = [en_t], [zh_t]
     if steps:
@@ -472,29 +474,33 @@ def build_complete_card(
     is_aborted: bool = False,
     footer_fields: list[list[str]] | None = None,
     footer_show_label: bool = True,
+    show_footer: bool = True,
+    reasoning_expanded: bool = False,
 ) -> dict[str, Any]:
     """完成态卡片 — 含 header、reasoning 面板、footer."""
     elements: list[dict] = []
 
     if reasoning_text:
-        elements.append(_build_reasoning_panel(reasoning_text, reasoning_elapsed_ms))
+        elements.append(_build_reasoning_panel(reasoning_text, reasoning_elapsed_ms, expanded=reasoning_expanded))
 
     if tool_steps:
         elements.append(_build_tool_panel(tool_steps, tool_elapsed_ms, expanded=False))
 
-    content = _downgrade_tables(optimize_markdown_style(text or _T["done"][0]))
-    for chunk in _split_long_text(content):
-        elements.append({"tag": "markdown", "content": chunk})
+    content = _downgrade_tables(optimize_markdown_style(text or (_T["done"][0] if show_footer else "")))
+    if content.strip():
+        for chunk in _split_long_text(content):
+            elements.append({"tag": "markdown", "content": chunk})
 
-    elements.extend(
-        _build_footer_elements(
-            footer_data,
-            is_error,
-            is_aborted,
-            fields=footer_fields,
-            show_label=footer_show_label,
+    if show_footer:
+        elements.extend(
+            _build_footer_elements(
+                footer_data,
+                is_error,
+                is_aborted,
+                fields=footer_fields,
+                show_label=footer_show_label,
+            )
         )
-    )
 
     summary = (text or reasoning_text or "")[:120]
     summary = summary.replace("\n", " ").replace("```", "").strip()

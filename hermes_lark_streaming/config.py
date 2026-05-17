@@ -24,6 +24,12 @@ class Config:
         return bool(sec.get("enabled", False))
 
     @property
+    def linear(self) -> bool:
+        """线性模式：工具调用和回复顺序展示为独立卡片."""
+        sec = self._streaming_sec()
+        return bool(sec.get("linear", False))
+
+    @property
     def show_reasoning(self) -> bool:
         """是否展示推理过程（display.platforms.feishu.show_reasoning → display.show_reasoning）.
 

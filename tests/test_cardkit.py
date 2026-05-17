@@ -431,6 +431,52 @@ class TestBuildImFallbackCard:
         assert len(card["elements"]) >= 1
 
 
+class TestBuildCompleteCardShowFooter:
+    def test_without_footer_no_hr(self) -> None:
+        card = build_complete_card(text="hello", show_footer=False, footer_data={})
+        tags = [e.get("tag") for e in card["elements"]]
+        assert "hr" not in tags
+
+    def test_with_footer_has_hr(self) -> None:
+        card = build_complete_card(text="hello", show_footer=True, footer_data={})
+        tags = [e.get("tag") for e in card["elements"]]
+        assert "hr" in tags
+
+    def test_empty_text_without_footer_no_elements(self) -> None:
+        card = build_complete_card(text="", show_footer=False, footer_data={})
+        assert card["elements"] == []
+
+    def test_empty_text_with_footer_has_fallback_content(self) -> None:
+        card = build_complete_card(text="", show_footer=True, footer_data={})
+        assert len(card["elements"]) >= 2
+
+
+class TestBuildCompleteCardReasoningExpanded:
+    def test_expanded_true(self) -> None:
+        card = build_complete_card(
+            text="hello",
+            reasoning_text="thinking...",
+            reasoning_elapsed_ms=100,
+            reasoning_expanded=True,
+        )
+        panel = card["elements"][0]
+        assert panel.get("expanded") is True
+
+    def test_expanded_false(self) -> None:
+        card = build_complete_card(
+            text="hello",
+            reasoning_text="thinking...",
+            reasoning_elapsed_ms=100,
+            reasoning_expanded=False,
+        )
+        panel = card["elements"][0]
+        assert panel.get("expanded") is False
+
+    def test_no_reasoning_no_panel(self) -> None:
+        card = build_complete_card(text="hello", reasoning_text="", reasoning_expanded=True)
+        assert all(e.get("element_id") != REASONING_ELEMENT_ID for e in card["elements"])
+
+
 class TestBuildCompleteCard:
     def test_basic_v1(self) -> None:
         card = build_complete_card(text="done", has_cardkit=False)
