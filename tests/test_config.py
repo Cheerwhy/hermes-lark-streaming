@@ -100,6 +100,24 @@ class TestCardDurationSec:
         assert cfg.card_duration_sec == 600
 
 
+class TestLinear:
+    def test_linear_true(self) -> None:
+        cfg = _make_config({"streaming": {"enabled": True, "linear": True}})
+        assert cfg.linear is True
+
+    def test_linear_false(self) -> None:
+        cfg = _make_config({"streaming": {"linear": False}})
+        assert cfg.linear is False
+
+    def test_linear_missing(self) -> None:
+        cfg = _make_config({"streaming": {"enabled": True}})
+        assert cfg.linear is False
+
+    def test_no_streaming_section(self) -> None:
+        cfg = _make_config({})
+        assert cfg.linear is False
+
+
 class TestFeishuAppId:
     def test_from_env(self) -> None:
         cfg = _make_config({})
