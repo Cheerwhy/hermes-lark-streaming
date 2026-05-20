@@ -15,6 +15,7 @@ from hermes_lark_streaming.cardkit import (
     _longest_backtick_run,
     build_complete_card,
     build_im_fallback_card,
+    build_linear_complete_card,
     build_streaming_card,
     build_streaming_card_v2,
 )
@@ -25,6 +26,7 @@ from hermes_lark_streaming.cardkit_md import (
     _strip_invalid_image_keys,
     optimize_markdown_style,
 )
+from hermes_lark_streaming.linear import Segment
 
 # --- Markdown 优化 ---
 
@@ -481,3 +483,103 @@ class TestBuildCompleteCard:
         card = build_complete_card()
         elements = card.get("elements", card.get("body", {}).get("elements", []))
         assert any("完成" in str(e) or "Done" in str(e) for e in elements)
+
+
+# --- 线性完成态卡片 ---
+
+
+def _seg(seg_type: str, text: str = "", **kwargs: int | float) -> Segment:
+    """创建测试用 Segment mock."""
+    seg = Segment(seg_type, f"{seg_type}_0")
+    seg.text = text
+    if seg_type == "reasoning":
+        seg.text_el_id = f"{seg_type}_0_text"
+    seg.tool_offset = int(kwargs.get("tool_offset", 0))
+    seg.tool_end_offset = int(kwargs.get("tool_end_offset", 0))
+    seg.elapsed_ms = float(kwargs.get("elapsed_ms", 0.0))
+    seg.start_time = float(kwargs.get("start_time", 0.0))
+    seg.created = True
+    seg.dirty = False
+    return seg
+
+
+class TestBuildLinearCompleteCard:
+    def test_empty_segments_and_skipped_reasoning(self) -> None:
+        """空 segments 渲染 Done；空 reasoning 被跳过."""
+        card = build_linear_complete_card(segments=[], all_tool_steps=[])
+        assert card["schema"] == "2.0"
+        assert any("Done" in str(e) or "完成" in str(e) for e in card["body"]["elements"])
+
+        card2 = build_linear_complete_card(segments=[_seg("reasoning", "")], all_tool_steps=[])
+        assert any("Done" in str(e) or "完成" in str(e) for e in card2["body"]["elements"])
+
+    def test_answer_only_no_done(self) -> None:
+        card = build_linear_complete_card(
+            segments=[_seg("answer", "hello world")],
+            all_tool_steps=[],
+        )
+        elements = card["body"]["elements"]
+        assert any("hello world" in str(e) for e in elements)
+        assert not any("Done" in str(e) for e in elements)
+
+    def test_reasoning_before_answer(self) -> None:
+        card = build_linear_complete_card(
+            segments=[_seg("reasoning", "think"), _seg("answer", "reply")],
+            all_tool_steps=[],
+        )
+        contents = [str(e) for e in card["body"]["elements"]]
+        r_idx = next(i for i, c in enumerate(contents) if "think" in c)
+        a_idx = next(i for i, c in enumerate(contents) if "reply" in c)
+        assert r_idx < a_idx
+
+    def test_tool_segment_uses_steps_slice(self) -> None:
+        steps = [_STEP_RUNNING, _STEP_SUCCESS, _STEP_RUNNING]
+        card = build_linear_complete_card(
+            segments=[_seg("tool", tool_offset=1, tool_end_offset=3)],
+            all_tool_steps=steps,
+        )
+        tool_elements = [e for e in card["body"]["elements"] if e.get("tag") == "collapsible_panel"]
+        assert len(tool_elements) == 1
+        assert len(tool_elements[0].get("elements", [])) == 2  # steps[1:3]
+
+    def test_three_round_ordering(self) -> None:
+        card = build_linear_complete_card(
+            segments=[
+                _seg("reasoning", "r1"),
+                _seg("answer", "a1"),
+                _seg("tool", tool_offset=0, tool_end_offset=2),
+                _seg("reasoning", "r2"),
+                _seg("answer", "a2"),
+            ],
+            all_tool_steps=[_STEP_SUCCESS, _STEP_RUNNING],
+        )
+        contents = [str(e) for e in card["body"]["elements"]]
+        r1 = next(i for i, c in enumerate(contents) if "r1" in c)
+        a1 = next(i for i, c in enumerate(contents) if "a1" in c)
+        r2 = next(i for i, c in enumerate(contents) if "r2" in c)
+        a2 = next(i for i, c in enumerate(contents) if "a2" in c)
+        assert r1 < a1 < r2 < a2
+
+    def test_tool_end_offset_zero_uses_all_steps(self) -> None:
+        steps = [_STEP_SUCCESS, _STEP_RUNNING]
+        card = build_linear_complete_card(
+            segments=[_seg("tool", tool_offset=0, tool_end_offset=0)],
+            all_tool_steps=steps,
+        )
+        inner = next(e for e in card["body"]["elements"] if e.get("tag") == "collapsible_panel")["elements"]
+        assert len(inner) == 2
+
+    def test_tool_empty_steps_skipped(self) -> None:
+        card = build_linear_complete_card(
+            segments=[_seg("tool", tool_offset=5, tool_end_offset=5)],
+            all_tool_steps=[_STEP_SUCCESS],
+        )
+        assert not any(e.get("tag") == "collapsible_panel" for e in card["body"]["elements"])
+
+    def test_summary_truncated_from_last_answer(self) -> None:
+        card = build_linear_complete_card(
+            segments=[_seg("answer", "short"), _seg("answer", "x" * 200)],
+            all_tool_steps=[],
+        )
+        summary = card["config"].get("summary", {}).get("content", "")
+        assert len(summary) <= 120
