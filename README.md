@@ -16,6 +16,7 @@
 ## 功能
 
 - **流式输出** — AI 回复实时显示在交互卡片中，打字机效果
+- **线性模式** — 按事件顺序在单张卡片内动态渲染思考、工具调用、回答内容
 - **思考过程** — 显示模型的推理/思考内容
 - **工具调用** — 实时展示工具调用状态和进度，含标准图标和结果/错误块
 - **CardKit v2.0** — 优先使用飞书 CardKit 流式 API，自动降级到 IM PATCH
@@ -72,6 +73,7 @@ hermes gateway restart
 ```yaml
 streaming:
   enabled: true
+  linear: true   # 可选：启用线性模式
 ```
 
 ### 凭据
@@ -114,6 +116,18 @@ streaming:
 **显示标签**（`footer.show_label`）：是否展示字段标签（如 "Elapsed"、"Context"）。默认：`false`。
 
 未配置时的默认值：`fields: [[status, elapsed, context, model]]`，`show_label: false`。
+
+### 线性模式
+
+启用后，插件按事件到达顺序在卡片内动态渲染思考、工具调用、回答元素，推理和工具调用不再收纳置顶，多轮对话内容按实际顺序展示。
+
+```yaml
+streaming:
+  enabled: true
+  linear: true
+```
+
+![](assets/linear.jpg)
 
 ---
 

@@ -16,6 +16,7 @@ Inspired by [openclaw-lark](https://github.com/larksuite/openclaw-lark) and [her
 ## Features
 
 - **Streaming output** — AI responses rendered in real-time interactive cards with typewriter effect
+- **Linear mode** — Dynamically renders thinking, tool calls, and answer elements in event arrival order within a single card
 - **Reasoning display** — Shows model thinking/reasoning content
 - **Tool use tracking** — Live tool call status with standard icons, result/error blocks
 - **CardKit v2.0** — Prefers Feishu CardKit streaming API, auto-fallback to IM PATCH
@@ -72,6 +73,7 @@ Add to `~/.hermes/config.yaml`:
 ```yaml
 streaming:
   enabled: true
+  linear: true   # Optional: enable linear mode
 ```
 
 ### Credentials
@@ -114,6 +116,18 @@ streaming:
 **Show Label** (`footer.show_label`): Whether to display field labels like "Elapsed", "Context". Default: `false`.
 
 Default (when not configured): `fields: [[status, elapsed, context, model]]`, `show_label: false`.
+
+### Linear Mode
+
+When enabled, the plugin dynamically renders thinking, tool call, and answer elements in event arrival order. Reasoning and tool calls are no longer collapsed to the top — multi-round content is displayed in actual order.
+
+```yaml
+streaming:
+  enabled: true
+  linear: true
+```
+
+![](assets/linear.jpg)
 
 ---
 
