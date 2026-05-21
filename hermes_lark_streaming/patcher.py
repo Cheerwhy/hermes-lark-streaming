@@ -1,4 +1,4 @@
-"""AST Patcher — 在 Hermes gateway/run.py 中注入 8 处 Hook 调用."""
+"""AST Patcher — 在 Hermes gateway/run.py 中注入 Hook 调用."""
 
 from __future__ import annotations
 
@@ -12,7 +12,17 @@ _logger = logging.getLogger("hermes_lark_streaming")
 
 PREFIX = "HERMES_LARK"
 
-_HOOK_NAMES = ["START", "COMPLETE", "TOOL", "ANSWER", "THINKING", "REASONING", "ABORT", "INTERRUPT"]
+_HOOK_NAMES = [
+    "START",
+    "COMPLETE",
+    "TOOL",
+    "ANSWER",
+    "THINKING",
+    "REASONING",
+    "BACKGROUND_REVIEW",
+    "ABORT",
+    "INTERRUPT",
+]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
 MK_START, MK_START_END = MARKERS[0]
@@ -21,8 +31,9 @@ MK_TOOL, MK_TOOL_END = MARKERS[2]
 MK_ANSWER, MK_ANSWER_END = MARKERS[3]
 MK_THINKING, MK_THINKING_END = MARKERS[4]
 MK_REASONING, MK_REASONING_END = MARKERS[5]
-MK_ABORT, MK_ABORT_END = MARKERS[6]
-MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[7]
+MK_BACKGROUND_REVIEW, MK_BACKGROUND_REVIEW_END = MARKERS[6]
+MK_ABORT, MK_ABORT_END = MARKERS[7]
+MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[8]
 
 _BACKUP_SUFFIX = ".hermes_lark.bak"
 
@@ -151,6 +162,30 @@ def _reasoning_hook(indent: str) -> str:
     )
 
 
+def _background_review_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_BACKGROUND_REVIEW,
+        MK_BACKGROUND_REVIEW_END,
+        [
+            "try:",
+            "    from hermes_lark_streaming.patch import on_background_review_message",
+            "    _lark_bg_review_sender = agent.background_review_callback",
+            "    def _lark_bg_review_callback(message):",
+            "        _lark_bg_review_deferred = on_background_review_message(",
+            "            message_id=event_message_id,",
+            "            text=message,",
+            "            sender=_lark_bg_review_sender,",
+            "        )",
+            "        if not _lark_bg_review_deferred:",
+            "            _lark_bg_review_sender(message)",
+            "    agent.background_review_callback = _lark_bg_review_callback",
+            "except Exception:",
+            "    pass",
+        ],
+    )
+
+
 def _abort_hook(indent: str) -> str:
     return _make_hook(
         indent,
@@ -203,6 +238,10 @@ class Patcher:
     def is_patched(self) -> bool:
         return MK_START in self.run_path.read_text(encoding="utf-8")
 
+    def is_fully_patched(self) -> bool:
+        content = self.run_path.read_text(encoding="utf-8")
+        return all(begin in content and end in content for begin, end in self.MARKERS)
+
     def verify_target(self) -> None:
         content = self.run_path.read_text(encoding="utf-8")
         tree = ast.parse(content)
@@ -249,13 +288,22 @@ class Patcher:
         if "agent.reasoning_config = reasoning_config" not in content:
             raise PatcherError("Cannot find reasoning_config anchor in run.py — Hermes version may be incompatible")
 
+        if "agent.background_review_callback = _bg_review_send" not in content:
+            raise PatcherError(
+                "Cannot find background_review_callback anchor in run.py — Hermes version may be incompatible"
+            )
+
     def apply(self) -> None:
-        if self.is_patched():
+        if self.is_fully_patched():
             return
 
         self.verify_target()
-        self._backup()
         content = self.run_path.read_text(encoding="utf-8")
+        if self.is_patched():
+            for begin, end in self.MARKERS:
+                content = self._remove_block(content, begin, end)
+        else:
+            self._backup()
         content = self._inject_all(content)
         self.run_path.write_text(content, encoding="utf-8")
 
@@ -291,6 +339,7 @@ class Patcher:
             ("answer", "answer", _find_func_body(tree, lines, "_stream_delta_cb")),
             ("thinking", "thinking", _find_func_body(tree, lines, "_interim_assistant_cb")),
             ("reasoning", "reasoning", _find_reasoning_site(tree, lines)),
+            ("background_review", "background_review", _find_background_review_site(tree, lines)),
         ]
 
         sites: list[tuple[int, str, str]] = []
@@ -310,6 +359,7 @@ class Patcher:
             "answer": _answer_hook,
             "thinking": _thinking_hook,
             "reasoning": _reasoning_hook,
+            "background_review": _background_review_hook,
         }
         for idx, indent, fn_name in sites:
             hook = _HOOK_FNS[fn_name](indent)
@@ -399,6 +449,13 @@ def _find_interrupt_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] 
 def _find_reasoning_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
     for i, line in enumerate(lines):
         if line.strip() == "agent.reasoning_config = reasoning_config":
+            return i + 1, _safe_indent(lines, i)
+    return None
+
+
+def _find_background_review_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    for i, line in enumerate(lines):
+        if line.strip() == "agent.background_review_callback = _bg_review_send":
             return i + 1, _safe_indent(lines, i)
     return None
 

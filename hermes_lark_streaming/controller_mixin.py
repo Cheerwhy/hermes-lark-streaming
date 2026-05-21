@@ -57,6 +57,7 @@ class ControllerMixin:
     _ensure_init: Callable[[], Coroutine[Any, Any, None]]
     _schedule_card_update: Callable[[CardSession], None]
     _cleanup: Callable[[str], None]
+    _flush_deferred_background_reviews: Callable[[CardSession], None]
 
     async def _do_create_card(self, session: CardSession) -> None:
         if session.state != IDLE:
@@ -270,6 +271,7 @@ class ControllerMixin:
         try:
             return await self._do_complete_inner(session)
         finally:
+            self._flush_deferred_background_reviews(session)
             self._cleanup(session.message_id)
 
     async def _do_complete_inner(self, session: CardSession) -> bool:

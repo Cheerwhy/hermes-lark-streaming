@@ -13,8 +13,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from concurrent.futures import Future as ConcurrentFuture
+from threading import Lock
 from typing import TYPE_CHECKING, Any
 
 from .config import Config
@@ -51,6 +52,9 @@ class CardSession:
         "card_msg_id",
         "chat_id",
         "created_at",
+        "deferred_background_review_closed",
+        "deferred_background_review_lock",
+        "deferred_background_reviews",
         "flush",
         "footer",
         "guard",
@@ -95,6 +99,9 @@ class CardSession:
         self._loop = loop
         self.last_tool_use_update = 0.0
         self.created_at = time.time()
+        self.deferred_background_review_closed = False
+        self.deferred_background_reviews: list[tuple[str, Callable[[str], Any]]] = []
+        self.deferred_background_review_lock = Lock()
 
         self.guard = UnavailableGuard(
             reply_to_message_id=message_id,
@@ -438,6 +445,40 @@ class StreamCardController(ControllerMixin, LinearControllerMixin):
 
         self._complete_session(session)
         return True
+
+    def defer_background_review(
+        self,
+        *,
+        message_id: str,
+        text: str,
+        sender: Callable[[str], Any],
+    ) -> bool:
+        """暂存 Hermes background review 通知，等卡片收尾后再发送."""
+        if not self.enabled or not text or not callable(sender):
+            return False
+        session = self._get_active_session(message_id)
+        if session is None:
+            return False
+        with session.deferred_background_review_lock:
+            if session.deferred_background_review_closed:
+                return False
+            session.deferred_background_reviews.append((text, sender))
+        return True
+
+    def _flush_deferred_background_reviews(self, session: CardSession) -> None:
+        lock = getattr(session, "deferred_background_review_lock", None)
+        reviews = getattr(session, "deferred_background_reviews", None)
+        if lock is None or reviews is None:
+            return
+        with lock:
+            session.deferred_background_review_closed = True
+            pending = list(reviews)
+            reviews.clear()
+        for text, sender in pending:
+            try:
+                sender(text)
+            except Exception:
+                _logger.debug("background review sender failed", exc_info=True)
 
     def _schedule_card_update(self, session: CardSession) -> None:
         if session.state == IDLE or session.state in _TERMINAL:

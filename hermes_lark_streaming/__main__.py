@@ -59,7 +59,7 @@ def _cmd_install() -> int:
     if patcher is None:
         return 1
 
-    if patcher.is_patched():
+    if patcher.is_fully_patched():
         print("Already patched.")
         return 0
 

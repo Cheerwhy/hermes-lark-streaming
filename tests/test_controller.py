@@ -66,6 +66,44 @@ def test_prune_stale_sessions_ignores_none_key_and_prunes_valid_key() -> None:
     assert valid_stale_session.flush.completed
 
 
+@pytest.mark.asyncio
+async def test_background_review_deferred_until_complete() -> None:
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_bg")
+    session.state = STREAMING
+    session.card_msg_id = "card_msg"
+    ctrl._sessions["msg_bg"] = session
+    sent: list[str] = []
+
+    assert ctrl.defer_background_review(message_id="msg_bg", text="review", sender=sent.append)
+    assert sent == []
+
+    await ctrl._do_complete(session)
+
+    assert sent == ["review"]
+    assert "msg_bg" not in ctrl._sessions
+
+
+def test_background_review_without_active_session_not_deferred() -> None:
+    ctrl = _setup_ctrl()
+    sent: list[str] = []
+
+    assert not ctrl.defer_background_review(message_id="missing", text="review", sender=sent.append)
+    assert sent == []
+
+
+def test_background_review_after_flush_not_deferred() -> None:
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_bg")
+    ctrl._sessions["msg_bg"] = session
+    sent: list[str] = []
+
+    ctrl._flush_deferred_background_reviews(session)
+
+    assert not ctrl.defer_background_review(message_id="msg_bg", text="review", sender=sent.append)
+    assert sent == []
+
+
 # ── 辅助函数 ──
 
 

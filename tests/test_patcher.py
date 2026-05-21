@@ -122,6 +122,19 @@ class TestApplyRemove:
         after_second = run_copy.read_text(encoding="utf-8")
         assert after_first == after_second
 
+    def test_apply_upgrades_partial_patch(self, run_copy: Path) -> None:
+        patcher = _patcher(run_copy)
+        patcher.apply()
+        begin, end = next(pair for pair in MARKERS if "BACKGROUND_REVIEW" in pair[0])
+        content = patcher._remove_block(run_copy.read_text(encoding="utf-8"), begin, end)
+        run_copy.write_text(content, encoding="utf-8")
+
+        patcher.apply()
+        upgraded = run_copy.read_text(encoding="utf-8")
+
+        assert upgraded.count(begin) == 1
+        assert upgraded.count(end) == 1
+
     def test_remove_restores_markers_free(self, run_copy: Path) -> None:
         patcher = _patcher(run_copy)
         original = run_copy.read_text(encoding="utf-8")
