@@ -172,10 +172,11 @@ $HERMES_PYTHON -m pip uninstall hermes-lark-streaming
 
 ## 工作原理
 
-插件通过 AST 注入在 `gateway/run.py` 的 **9 个位置**插入 hook 调用，所有业务逻辑在 `hermes_lark_streaming` 包内完成：
+插件通过 AST 注入在 `gateway/run.py` 的 **10 个位置**插入 hook 调用，所有业务逻辑在 `hermes_lark_streaming` 包内完成：
 
 | Hook | 注入位置 | 说明 |
 |------|----------|------|
+| `on_feishu_normalize` | `_handle_message` 中 `source = event.source` 之后 | 修正飞书引用消息的虚假 thread_id |
 | `on_message_started` | `_handle_message_with_agent` 函数体开头 | 创建卡片会话，发送占位卡片 |
 | `on_tool_updated` | `progress_callback` 内部 | 实时展示工具调用状态 |
 | `on_answer_delta` | `_stream_delta_cb` 内部 | 流式更新回答文本 |

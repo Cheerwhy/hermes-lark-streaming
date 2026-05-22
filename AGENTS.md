@@ -2,7 +2,7 @@
 
 ## Project
 
-Hermes Gateway plugin that injects 8 hooks into `~/.hermes/hermes-agent/gateway/run.py` via AST patching to provide real-time streaming Feishu/Lark CardKit v2.0 cards with typewriter effect.
+Hermes Gateway plugin that injects 10 hooks into `~/.hermes/hermes-agent/gateway/run.py` via AST patching to provide real-time streaming Feishu/Lark CardKit v2.0 cards with typewriter effect.
 
 ## Commands
 
@@ -34,6 +34,7 @@ $HERMES_PYTHON -m pytest tests/ -v
 gateway/run.py (Hermes)
   └─ AST-injected hooks (patcher.py defines markers + injection logic)
        │
+       ├─ on_feishu_normalize   → patch.on_feishu_normalize() (inline, fixes false thread_id)
        ├─ on_message_started    → controller.on_message_started()
        ├─ on_tool_updated       → controller.on_tool_update()
        ├─ on_answer_delta       → controller.on_answer()
@@ -74,6 +75,8 @@ Card templates (cardkit.py) — builds Feishu card JSON
 - Hermes `>= 0.11.0` (2026.4.23) required. `patcher.py` targets specific function names in Hermes's `gateway/run.py` (`_handle_message_with_agent`, `progress_callback`, `_stream_delta_cb`, `_interim_assistant_cb`). If Hermes changes these, `verify` will catch it.
 - The interrupt hook is injected at the `"Restart typing indicator"` comment in `_run_agent`. It fires when `was_interrupted and next_message_id` are both truthy. The `_interrupt_map` redirects `on_completed(old_id)` to the new session, handling nested interrupts (A→B→C).
 - The `_thinking_hook` has a `not already_streamed` guard (patcher.py:103) — thinking deltas are skipped once answer streaming has begun.
+- The NORMALIZE hook (`on_feishu_normalize`) is injected at `source = event.source` in `_handle_message`, before any other processing. It detects Feishu quoted messages with a false `thread_id` (set by the Feishu adapter but absent in raw event) and clears it, preventing `_reply_anchor_for_event` from returning the wrong ID.
+- The `anchor_id` mechanism: for Feishu quoted messages, `_reply_anchor_for_event(event)` returns `reply_to_message_id` instead of `event.message_id`. The START hook passes both — `message_id` for session identity and streaming callback lookup, `anchor_id` for card delivery (reply target). Sessions are registered under both keys.
 - Reasoning display depends on upstream providing `<thinking>`/`<thought>`/`<antthinking>` tags or `Reasoning:\n` prefix in text. Native API reasoning blocks (Anthropic extended thinking, DeepSeek reasoning_content) are available via `on_reasoning_delta` hook when `display.platforms.feishu.show_reasoning` is enabled.
 - CardKit v2.0 elements (collapsible_panel, streaming_mode) only work with `"schema": "2.0"` cards. IM fallback path uses v1 card format.
 - Linear mode (default) uses a single card for the entire message lifecycle: elements are dynamically created in event arrival order. Non-linear mode creates a streaming card then replaces it with a completion card. When linear CardKit creation fails, it falls back to non-linear mode.

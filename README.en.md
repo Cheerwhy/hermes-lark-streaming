@@ -172,10 +172,11 @@ $HERMES_PYTHON -m pip uninstall hermes-lark-streaming
 
 ## How It Works
 
-The plugin injects **9 hook calls** into `gateway/run.py` via AST patching. All business logic lives in the `hermes_lark_streaming` package:
+The plugin injects **10 hook calls** into `gateway/run.py` via AST patching. All business logic lives in the `hermes_lark_streaming` package:
 
 | Hook | Injection Target | Description |
 |------|-----------------|-------------|
+| `on_feishu_normalize` | After `source = event.source` in `_handle_message` | Fixes false thread_id on Feishu quoted messages |
 | `on_message_started` | Top of `_handle_message_with_agent` | Creates card session and placeholder card |
 | `on_tool_updated` | `progress_callback` | Displays tool call status in real-time |
 | `on_answer_delta` | `_stream_delta_cb` | Streams answer text to the card |
