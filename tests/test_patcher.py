@@ -114,6 +114,18 @@ class TestApplyRemove:
         content = run_copy.read_text(encoding="utf-8")
         ast.parse(content)  # should not raise
 
+    def test_apply_uses_current_turn_message_id_for_card_session(self, run_copy: Path) -> None:
+        patcher = _patcher(run_copy)
+        patcher.apply()
+        content = run_copy.read_text(encoding="utf-8")
+
+        assert "_lark_message_id = self._reply_anchor_for_event(event) or event.message_id" in content
+        assert "on_message_started(message_id=_lark_message_id" in content
+        assert "on_message_completed(\n                    message_id=_lark_message_id" in content
+        assert "on_answer_delta(message_id=event_message_id" in content
+        assert "on_thinking_delta(message_id=event_message_id" in content
+        assert "on_reasoning_delta(message_id=event_message_id" in content
+
     def test_apply_idempotent(self, run_copy: Path) -> None:
         patcher = _patcher(run_copy)
         patcher.apply()

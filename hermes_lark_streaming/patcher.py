@@ -52,7 +52,8 @@ def _start_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_lark_streaming.patch import on_message_started",
-            "    on_message_started(message_id=event.message_id, chat_id=source.chat_id)",
+            "    _lark_message_id = self._reply_anchor_for_event(event) or event.message_id",
+            "    on_message_started(message_id=_lark_message_id, chat_id=source.chat_id)",
             "except Exception:",
             "    pass",
         ],
@@ -67,8 +68,9 @@ def _complete_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_lark_streaming.patch import on_message_completed",
+            "    _lark_message_id = self._reply_anchor_for_event(event) or event.message_id",
             "    _lark_card_sent = on_message_completed(",
-            "        message_id=event.message_id,",
+            "        message_id=_lark_message_id,",
             "        answer=response,",
             "        duration=_response_time,",
             "        model=agent_result.get('model', ''),",
