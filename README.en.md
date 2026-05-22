@@ -73,7 +73,7 @@ Add to `~/.hermes/config.yaml`:
 ```yaml
 streaming:
   enabled: true
-  linear: true   # Optional: enable linear mode
+  # linear mode is enabled by default, no configuration needed
 ```
 
 ### Credentials
@@ -126,7 +126,6 @@ When long conversations or excessive tool steps cause the card to approach Feish
 ```yaml
 streaming:
   enabled: true
-  linear: true
 ```
 
 ![](assets/linear.jpg)

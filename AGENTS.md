@@ -76,5 +76,5 @@ Card templates (cardkit.py) — builds Feishu card JSON
 - The `_thinking_hook` has a `not already_streamed` guard (patcher.py:103) — thinking deltas are skipped once answer streaming has begun.
 - Reasoning display depends on upstream providing `<thinking>`/`<thought>`/`<antthinking>` tags or `Reasoning:\n` prefix in text. Native API reasoning blocks (Anthropic extended thinking, DeepSeek reasoning_content) are available via `on_reasoning_delta` hook when `display.platforms.feishu.show_reasoning` is enabled.
 - CardKit v2.0 elements (collapsible_panel, streaming_mode) only work with `"schema": "2.0"` cards. IM fallback path uses v1 card format.
-- Linear mode (`streaming.linear: true`) uses a single card for the entire message lifecycle: elements are dynamically created in event arrival order. Non-linear mode creates a streaming card then replaces it with a completion card. When linear CardKit creation fails, it falls back to non-linear mode.
+- Linear mode (default) uses a single card for the entire message lifecycle: elements are dynamically created in event arrival order. Non-linear mode creates a streaming card then replaces it with a completion card. When linear CardKit creation fails, it falls back to non-linear mode.
 - Commit messages: body should use bullet list format (unnumbered `- item`).

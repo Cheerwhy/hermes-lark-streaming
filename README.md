@@ -73,7 +73,7 @@ hermes gateway restart
 ```yaml
 streaming:
   enabled: true
-  linear: true   # 可选：启用线性模式
+  # linear 模式已默认开启，无需配置
 ```
 
 ### 凭据
@@ -126,7 +126,6 @@ streaming:
 ```yaml
 streaming:
   enabled: true
-  linear: true
 ```
 
 ![](assets/linear.jpg)
