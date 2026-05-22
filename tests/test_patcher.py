@@ -119,9 +119,18 @@ class TestApplyRemove:
         patcher.apply()
         content = run_copy.read_text(encoding="utf-8")
 
-        assert "_lark_message_id = self._reply_anchor_for_event(event) or event.message_id" in content
-        assert "on_message_started(message_id=_lark_message_id" in content
-        assert "on_message_completed(\n                    message_id=_lark_message_id" in content
+        assert "# HERMES_LARK_NORMALIZE_BEGIN" in content
+        assert "source = event.source\n        # HERMES_LARK_NORMALIZE_BEGIN" in content
+        assert "on_feishu_normalize(" in content
+        assert "on_message_started(" in content
+        assert "_lark_anchor_id = self._reply_anchor_for_event(event)" in content
+        assert "message_id=event.message_id" in content
+        assert "anchor_id=_lark_anchor_id" in content
+        assert "_lark_next_message_id = getattr(pending_event, 'message_id', None) or next_message_id" in content
+        assert "new_message_id=_lark_next_message_id" in content
+        assert "anchor_id=_lark_next_anchor_id" in content
+        assert "on_message_completed(" in content
+        assert "message_id=event.message_id" in content
         assert "on_answer_delta(message_id=event_message_id" in content
         assert "on_thinking_delta(message_id=event_message_id" in content
         assert "on_reasoning_delta(message_id=event_message_id" in content

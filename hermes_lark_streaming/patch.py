@@ -39,10 +39,64 @@ def _safe_hook(
     return decorator
 
 
+def on_feishu_normalize(
+    *,
+    message_id: str,
+    source: Any,
+    event: Any,
+    reply_anchor_id: str | None = None,
+) -> None:
+    """[注入点 0] _handle_message source 赋值后 — 修正飞书引用消息的虚假 thread_id."""
+    ctrl = get_controller()
+    if not ctrl.enabled:
+        return
+
+    platform = getattr(getattr(source, "platform", None), "value", "")
+    if platform != "feishu":
+        return
+
+    raw = getattr(event, "raw_message", None)
+    raw_event = raw.get("event") if isinstance(raw, dict) else None
+    if raw_event is None:
+        raw_event = getattr(raw, "event", None)
+
+    raw_message = None
+    if isinstance(raw_event, dict):
+        raw_message = raw_event.get("message")
+    elif raw_event is not None:
+        raw_message = getattr(raw_event, "message", None)
+    if raw_message is None and isinstance(raw, dict):
+        raw_message = raw.get("message")
+    if raw_message is None:
+        raw_message = raw
+
+    real_thread_id = None
+    if isinstance(raw_message, dict):
+        real_thread_id = raw_message.get("thread_id")
+    else:
+        real_thread_id = getattr(raw_message, "thread_id", None)
+
+    reply_to = getattr(event, "reply_to_message_id", None)
+    source_thread_id = getattr(source, "thread_id", None)
+
+    _logger.info(
+        "feishu inbound ids: msg=%s anchor=%s source_thread=%s raw_thread=%s reply_to=%s",
+        message_id,
+        reply_anchor_id,
+        source_thread_id,
+        real_thread_id,
+        reply_to,
+    )
+
+    if reply_to and source_thread_id and not real_thread_id:
+        source.thread_id = None
+        event.source = source
+
+
 @_safe_hook()
-def on_message_started(*, ctrl: Any, message_id: str, chat_id: str) -> None:
+def on_message_started(*, ctrl: Any, message_id: str, chat_id: str, anchor_id: str | None = None) -> None:
     """[注入点 1] 函数开头 — message.started."""
-    ctrl.on_message_started(message_id=message_id, chat_id=chat_id)
+    ctrl.on_message_started(message_id=message_id, chat_id=chat_id, anchor_id=anchor_id)
 
 
 @_safe_hook(default_return=False)
@@ -135,10 +189,12 @@ def on_message_interrupted(
     message_id: str,
     new_message_id: str,
     chat_id: str,
+    anchor_id: str | None = None,
 ) -> None:
     """[注入点 9] interrupt 发生 — message.interrupted."""
     ctrl.on_interrupted(
         old_message_id=message_id,
         new_message_id=new_message_id,
         chat_id=chat_id,
+        anchor_id=anchor_id,
     )

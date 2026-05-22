@@ -48,6 +48,7 @@ class CardSession:
 
     __slots__ = (
         "_loop",
+        "anchor_id",
         "card_id",
         "card_msg_id",
         "chat_id",
@@ -85,6 +86,7 @@ class CardSession:
         loop: asyncio.AbstractEventLoop,
     ) -> None:
         self.message_id = message_id
+        self.anchor_id: str | None = None
         self.chat_id = chat_id
         self.state = IDLE
         self.card_msg_id: str | None = None
@@ -199,6 +201,7 @@ class StreamCardController(ControllerMixin, LinearControllerMixin):
         *,
         message_id: str | None,
         chat_id: str,
+        anchor_id: str | None = None,
     ) -> None:
         """消息处理开始 — 创建会话 + 发占位卡片."""
         if not self.enabled:
@@ -217,7 +220,10 @@ class StreamCardController(ControllerMixin, LinearControllerMixin):
             return
         session = CardSession(message_id, chat_id, loop)
         self._sessions[message_id] = session
-        _logger.info("session created: msg=%s chat=%s", message_id[:12], chat_id[:12])
+        if anchor_id and anchor_id != message_id:
+            session.anchor_id = anchor_id
+            self._sessions[anchor_id] = session
+        _logger.info("session created: msg=%s chat=%s anchor=%s", message_id[:12], chat_id[:12], (anchor_id or "")[:12])
 
         if self._cfg.linear:
             self._fire_and_forget(self._do_create_linear_card(session), loop)
@@ -361,6 +367,7 @@ class StreamCardController(ControllerMixin, LinearControllerMixin):
         old_message_id: str,
         new_message_id: str,
         chat_id: str,
+        anchor_id: str | None = None,
     ) -> None:
         """用户发送新消息导致前一条消息被中断 — abort A + create B."""
         if not self.enabled:
@@ -379,12 +386,17 @@ class StreamCardController(ControllerMixin, LinearControllerMixin):
         if new_message_id not in self._sessions:
             loop = self._get_loop()
             if loop is not None:
+                reply_anchor_id = anchor_id if anchor_id and anchor_id != new_message_id else None
                 session = CardSession(new_message_id, chat_id, loop)
+                session.anchor_id = reply_anchor_id
                 self._sessions[new_message_id] = session
+                if reply_anchor_id:
+                    self._sessions[reply_anchor_id] = session
                 _logger.info(
-                    "on_interrupted: create new msg=%s chat=%s",
+                    "on_interrupted: create new msg=%s chat=%s anchor=%s",
                     new_message_id[:12],
                     chat_id[:12],
+                    (reply_anchor_id or new_message_id)[:12],
                 )
                 if self._cfg.linear:
                     self._fire_and_forget(self._do_create_linear_card(session), loop)
@@ -514,6 +526,9 @@ class StreamCardController(ControllerMixin, LinearControllerMixin):
         session = self._sessions.pop(message_id, None)
         if session is None:
             return
+        anchor = getattr(session, "anchor_id", None)
+        if anchor and self._sessions.get(anchor) is session:
+            del self._sessions[anchor]
         stale_keys = [k for k, v in self._interrupt_map.items() if v == message_id]
         for k in stale_keys:
             del self._interrupt_map[k]

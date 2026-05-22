@@ -13,6 +13,7 @@ _logger = logging.getLogger("hermes_lark_streaming")
 PREFIX = "HERMES_LARK"
 
 _HOOK_NAMES = [
+    "NORMALIZE",
     "START",
     "COMPLETE",
     "TOOL",
@@ -25,15 +26,16 @@ _HOOK_NAMES = [
 ]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
-MK_START, MK_START_END = MARKERS[0]
-MK_COMPLETE, MK_COMPLETE_END = MARKERS[1]
-MK_TOOL, MK_TOOL_END = MARKERS[2]
-MK_ANSWER, MK_ANSWER_END = MARKERS[3]
-MK_THINKING, MK_THINKING_END = MARKERS[4]
-MK_REASONING, MK_REASONING_END = MARKERS[5]
-MK_BACKGROUND_REVIEW, MK_BACKGROUND_REVIEW_END = MARKERS[6]
-MK_ABORT, MK_ABORT_END = MARKERS[7]
-MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[8]
+MK_NORMALIZE, MK_NORMALIZE_END = MARKERS[0]
+MK_START, MK_START_END = MARKERS[1]
+MK_COMPLETE, MK_COMPLETE_END = MARKERS[2]
+MK_TOOL, MK_TOOL_END = MARKERS[3]
+MK_ANSWER, MK_ANSWER_END = MARKERS[4]
+MK_THINKING, MK_THINKING_END = MARKERS[5]
+MK_REASONING, MK_REASONING_END = MARKERS[6]
+MK_BACKGROUND_REVIEW, MK_BACKGROUND_REVIEW_END = MARKERS[7]
+MK_ABORT, MK_ABORT_END = MARKERS[8]
+MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[9]
 
 _BACKUP_SUFFIX = ".hermes_lark.bak"
 
@@ -44,6 +46,26 @@ def _make_hook(indent: str, begin: str, end: str, body_lines: list[str]) -> str:
     return f"{indent}{begin}\n" + "".join(f"{indent}{line}\n" for line in body_lines) + f"{indent}{end}\n"
 
 
+def _feishu_normalize_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_NORMALIZE,
+        MK_NORMALIZE_END,
+        [
+            "try:",
+            "    from hermes_lark_streaming.patch import on_feishu_normalize",
+            "    on_feishu_normalize(",
+            "        message_id=event.message_id,",
+            "        source=source,",
+            "        event=event,",
+            "        reply_anchor_id=self._reply_anchor_for_event(event),",
+            "    )",
+            "except Exception:",
+            "    pass",
+        ],
+    )
+
+
 def _start_hook(indent: str) -> str:
     return _make_hook(
         indent,
@@ -52,8 +74,12 @@ def _start_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_lark_streaming.patch import on_message_started",
-            "    _lark_message_id = self._reply_anchor_for_event(event) or event.message_id",
-            "    on_message_started(message_id=_lark_message_id, chat_id=source.chat_id)",
+            "    _lark_anchor_id = self._reply_anchor_for_event(event)",
+            "    on_message_started(",
+            "        message_id=event.message_id,",
+            "        chat_id=source.chat_id,",
+            "        anchor_id=_lark_anchor_id,",
+            "    )",
             "except Exception:",
             "    pass",
         ],
@@ -68,9 +94,8 @@ def _complete_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_lark_streaming.patch import on_message_completed",
-            "    _lark_message_id = self._reply_anchor_for_event(event) or event.message_id",
             "    _lark_card_sent = on_message_completed(",
-            "        message_id=_lark_message_id,",
+            "        message_id=event.message_id,",
             "        answer=response,",
             "        duration=_response_time,",
             "        model=agent_result.get('model', ''),",
@@ -210,13 +235,18 @@ def _interrupt_hook(indent: str) -> str:
         MK_INTERRUPT_END,
         [
             "try:",
-            "    from hermes_lark_streaming.patch import on_message_interrupted",
-            "    if was_interrupted and next_message_id:",
+            "    from hermes_lark_streaming.patch import on_message_interrupted, on_message_aborted",
+            "    _lark_next_message_id = getattr(pending_event, 'message_id', None) or next_message_id",
+            "    _lark_next_anchor_id = next_message_id",
+            "    if was_interrupted and _lark_next_message_id:",
             "        on_message_interrupted(",
             "            message_id=event_message_id,",
-            "            new_message_id=next_message_id,",
+            "            new_message_id=_lark_next_message_id,",
             "            chat_id=source.chat_id,",
+            "            anchor_id=_lark_next_anchor_id,",
             "        )",
+            "    elif was_interrupted:",
+            "        on_message_aborted(message_id=event_message_id)",
             "except Exception:",
             "    pass",
         ],
@@ -295,6 +325,12 @@ class Patcher:
                 "Cannot find background_review_callback anchor in run.py — Hermes version may be incompatible"
             )
 
+        normalize_site = _find_handle_message_source_site(tree, content.splitlines(keepends=True))
+        if normalize_site is None:
+            raise PatcherError(
+                "Cannot find _handle_message source anchor in run.py — Hermes version may be incompatible"
+            )
+
     def apply(self) -> None:
         if self.is_fully_patched():
             return
@@ -333,6 +369,7 @@ class Patcher:
         lines = content.splitlines(keepends=True)
 
         hook_defs: list[tuple[str, str, tuple[int, str] | None]] = [
+            ("normalize", "normalize", _find_handle_message_source_site(tree, lines)),
             ("start", "start", _find_func_body(tree, lines, "_handle_message_with_agent")),
             ("complete", "complete", _find_handler_return(tree, lines)),
             ("abort", "abort", _find_handler_abort(tree, lines)),
@@ -353,6 +390,7 @@ class Patcher:
 
         sites.sort(key=lambda x: x[0], reverse=True)
         _HOOK_FNS = {
+            "normalize": _feishu_normalize_hook,
             "start": _start_hook,
             "complete": _complete_hook,
             "abort": _abort_hook,
@@ -401,6 +439,25 @@ def _find_func_body(tree: ast.Module, lines: list[str], name: str) -> tuple[int,
                 lineno = body[start].lineno - 1
                 indent = _safe_indent(lines, lineno)
                 return lineno, indent
+    return None
+
+
+def _find_handle_message_source_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_message":
+            for stmt in node.body:
+                if (
+                    isinstance(stmt, ast.Assign)
+                    and len(stmt.targets) == 1
+                    and isinstance(stmt.targets[0], ast.Name)
+                    and stmt.targets[0].id == "source"
+                    and isinstance(stmt.value, ast.Attribute)
+                    and stmt.value.attr == "source"
+                    and isinstance(stmt.value.value, ast.Name)
+                    and stmt.value.value.id == "event"
+                ):
+                    lineno = stmt.end_lineno or stmt.lineno
+                    return lineno, _safe_indent(lines, stmt.lineno - 1)
     return None
 
 

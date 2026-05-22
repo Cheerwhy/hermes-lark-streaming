@@ -132,6 +132,7 @@ class LinearControllerMixin:
             assert self._client is not None
 
             try:
+                reply_to_message_id = session.anchor_id or session.message_id
                 card = build_streaming_card_v2(
                     show_tool_use=False,
                     show_reasoning=False,
@@ -139,7 +140,7 @@ class LinearControllerMixin:
                 )
                 card_id = await self._client.cardkit_create(card)
                 card_msg_id = await self._client.reply_card_by_id(
-                    session.message_id,
+                    reply_to_message_id,
                     card_id,
                 )
                 session.card_id = card_id
@@ -151,7 +152,7 @@ class LinearControllerMixin:
                 _logger.info("linear CardKit create failed, falling back to non-linear")
                 card = build_im_fallback_card()
                 card_msg_id = await self._client.reply_card(
-                    session.message_id,
+                    reply_to_message_id,
                     card,
                 )
                 session.card_msg_id = card_msg_id
@@ -576,7 +577,7 @@ class LinearControllerMixin:
                 show_streaming_element=False,
             )
             new_card_id = await self._client.cardkit_create(card)
-            new_msg_id = await self._client.reply_card_by_id(session.message_id, new_card_id)
+            new_msg_id = await self._client.reply_card_by_id(session.anchor_id or session.message_id, new_card_id)
         except Exception:
             _logger.warning(
                 "linear split fallback: create next card failed, continue on current card",

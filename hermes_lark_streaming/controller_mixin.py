@@ -74,12 +74,13 @@ class ControllerMixin:
                 )
 
             try:
+                reply_to_message_id = session.anchor_id or session.message_id
                 card = build_streaming_card_v2(
                     show_tool_use=False, show_reasoning=self._cfg.show_reasoning
                 )
                 card_id = await self._client.cardkit_create(card)
                 card_msg_id = await self._client.reply_card_by_id(
-                    session.message_id,
+                    reply_to_message_id,
                     card_id,
                 )
                 session.card_id = card_id
@@ -89,7 +90,7 @@ class ControllerMixin:
             except FeishuAPIError:
                 card = build_im_fallback_card()
                 card_msg_id = await self._client.reply_card(
-                    session.message_id,
+                    reply_to_message_id,
                     card,
                 )
                 session.card_msg_id = card_msg_id

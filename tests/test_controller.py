@@ -12,6 +12,7 @@ import pytest
 from hermes_lark_streaming.controller import CardSession, StreamCardController
 from hermes_lark_streaming.controller_linear_mixin import _estimate_segment_elements
 from hermes_lark_streaming.controller_mixin import (
+    ABORTED,
     COMPLETED,
     FAILED,
     STREAMING,
@@ -43,6 +44,43 @@ def test_on_message_started_ignores_missing_message_id(message_id: str | None) -
     ctrl.on_message_started(message_id=message_id, chat_id="chat")
 
     assert ctrl._sessions == {}
+
+
+def test_on_message_started_registers_anchor_alias_and_cleanup() -> None:
+    ctrl = StreamCardController()
+    _enable(ctrl)
+
+    with patch.object(ctrl, "_fire_and_forget", side_effect=lambda coro, loop: coro.close()):
+        ctrl.on_message_started(message_id="msg", chat_id="chat", anchor_id="quoted")
+
+    session = ctrl._sessions["msg"]
+    assert ctrl._sessions["quoted"] is session
+    assert session.anchor_id == "quoted"
+
+    ctrl._cleanup("msg")
+
+    assert "msg" not in ctrl._sessions
+    assert "quoted" not in ctrl._sessions
+
+
+def test_on_interrupted_uses_new_message_id_and_anchor_alias() -> None:
+    ctrl = StreamCardController()
+    _enable(ctrl)
+
+    with patch.object(ctrl, "_fire_and_forget", side_effect=lambda coro, loop: coro.close()):
+        ctrl.on_message_started(message_id="old", chat_id="chat")
+        ctrl.on_interrupted(
+            old_message_id="old",
+            new_message_id="new",
+            chat_id="chat",
+            anchor_id="quoted",
+        )
+
+    session = ctrl._sessions["new"]
+    assert ctrl._sessions["quoted"] is session
+    assert session.anchor_id == "quoted"
+    assert ctrl._interrupt_map["old"] == "new"
+    assert ctrl._sessions["old"].state == ABORTED
 
 
 def test_prune_stale_sessions_ignores_none_key_and_prunes_valid_key() -> None:
@@ -137,6 +175,18 @@ def _setup_ctrl(*, linear: bool = False) -> StreamCardController:
     ctrl._initialized = True
     ctrl._client = _mock_client()
     return ctrl
+
+
+@pytest.mark.asyncio
+async def test_create_card_replies_to_anchor_id() -> None:
+    ctrl = _setup_ctrl()
+    session = _make_session("msg")
+    session.anchor_id = "quoted"
+
+    await ctrl._do_create_card(session)
+
+    ctrl._client.reply_card_by_id.assert_called_once()
+    assert ctrl._client.reply_card_by_id.call_args.args[0] == "quoted"
 
 
 def _capture_split_calls(
