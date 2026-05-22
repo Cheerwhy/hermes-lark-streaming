@@ -172,7 +172,7 @@ $HERMES_PYTHON -m pip uninstall hermes-lark-streaming
 
 ## How It Works
 
-The plugin injects **10 hook calls** into `gateway/run.py` via AST patching. All business logic lives in the `hermes_lark_streaming` package:
+The plugin injects hook calls into `gateway/run.py` via AST patching. All business logic lives in the `hermes_lark_streaming` package:
 
 | Hook | Injection Target | Description |
 |------|-----------------|-------------|

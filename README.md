@@ -172,7 +172,7 @@ $HERMES_PYTHON -m pip uninstall hermes-lark-streaming
 
 ## 工作原理
 
-插件通过 AST 注入在 `gateway/run.py` 的 **10 个位置**插入 hook 调用，所有业务逻辑在 `hermes_lark_streaming` 包内完成：
+插件通过 AST 注入在 `gateway/run.py` 插入 hook 调用，所有业务逻辑在 `hermes_lark_streaming` 包内完成：
 
 | Hook | 注入位置 | 说明 |
 |------|----------|------|

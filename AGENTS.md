@@ -2,7 +2,7 @@
 
 ## Project
 
-Hermes Gateway plugin that injects 10 hooks into `~/.hermes/hermes-agent/gateway/run.py` via AST patching to provide real-time streaming Feishu/Lark CardKit v2.0 cards with typewriter effect.
+Hermes Gateway plugin that injects hooks into `~/.hermes/hermes-agent/gateway/run.py` via AST patching to provide real-time streaming Feishu/Lark CardKit v2.0 cards with typewriter effect.
 
 ## Commands
 
