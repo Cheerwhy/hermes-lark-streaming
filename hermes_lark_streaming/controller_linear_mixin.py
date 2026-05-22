@@ -568,6 +568,7 @@ class LinearControllerMixin:
             all_tool_steps=all_steps,
             footer_fields=[],
             footer_show_label=False,
+            panel_expanded=self._cfg.panel_expanded,
         )
 
         try:
@@ -666,6 +667,7 @@ class LinearControllerMixin:
             is_aborted=is_aborted,
             footer_fields=self._cfg.footer_fields,
             footer_show_label=self._cfg.footer_show_label,
+            panel_expanded=self._cfg.panel_expanded,
         )
 
         streaming_closed = False

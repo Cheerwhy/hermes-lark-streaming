@@ -30,6 +30,12 @@ class Config:
         return bool(sec.get("linear", True))
 
     @property
+    def panel_expanded(self) -> bool:
+        """完成态卡片中面板（工具、推理）是否保持展开."""
+        sec = self._streaming_sec()
+        return bool(sec.get("panel_expanded", False))
+
+    @property
     def show_reasoning(self) -> bool:
         """是否展示推理过程（display.platforms.feishu.show_reasoning → display.show_reasoning）.
 

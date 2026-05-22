@@ -118,6 +118,16 @@ streaming:
 
 Default (when not configured): `fields: [[status, elapsed, context, model]]`, `show_label: false`.
 
+### Panel Collapse
+
+In the completion card, reasoning and tool panels are collapsed by default. Set `panel_expanded: true` to keep them expanded:
+
+```yaml
+streaming:
+  enabled: true
+  panel_expanded: true
+```
+
 ### Linear Mode (Default)
 
 The plugin dynamically renders thinking, tool call, and answer elements in event arrival order. Reasoning and tool calls are no longer collapsed to the top — multi-round content is displayed in actual order.

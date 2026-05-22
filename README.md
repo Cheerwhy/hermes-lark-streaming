@@ -118,6 +118,16 @@ streaming:
 
 未配置时的默认值：`fields: [[status, elapsed, context, model]]`，`show_label: false`。
 
+### 面板折叠
+
+完成态卡片中，推理面板和工具面板默认折叠。配置 `panel_expanded: true` 可保持展开：
+
+```yaml
+streaming:
+  enabled: true
+  panel_expanded: true
+```
+
 ### 线性模式（默认）
 
 插件按事件到达顺序在卡片内动态渲染思考、工具调用、回答元素，推理和工具调用不再收纳置顶，多轮对话内容按实际顺序展示。

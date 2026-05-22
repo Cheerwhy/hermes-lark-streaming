@@ -316,6 +316,7 @@ class ControllerMixin:
             is_aborted=is_aborted,
             footer_fields=self._cfg.footer_fields,
             footer_show_label=self._cfg.footer_show_label,
+            panel_expanded=self._cfg.panel_expanded,
         )
 
         for attempt in range(3):

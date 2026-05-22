@@ -485,15 +485,16 @@ def build_complete_card(
     is_aborted: bool = False,
     footer_fields: list[list[str]] | None = None,
     footer_show_label: bool = True,
+    panel_expanded: bool = False,
 ) -> dict[str, Any]:
     """完成态卡片 — 含 header、reasoning 面板、footer."""
     elements: list[dict] = []
 
     if reasoning_text:
-        elements.append(_build_reasoning_panel(reasoning_text, reasoning_elapsed_ms))
+        elements.append(_build_reasoning_panel(reasoning_text, reasoning_elapsed_ms, expanded=panel_expanded))
 
     if tool_steps:
-        elements.append(_build_tool_panel(tool_steps, tool_elapsed_ms, expanded=False))
+        elements.append(_build_tool_panel(tool_steps, tool_elapsed_ms, expanded=panel_expanded))
 
     content = _downgrade_tables(optimize_markdown_style(text or _T["done"][0]))
     for chunk in _split_long_text(content):
@@ -540,6 +541,7 @@ def build_linear_complete_card(
     is_aborted: bool = False,
     footer_fields: list[list[str]] | None = None,
     footer_show_label: bool = True,
+    panel_expanded: bool = False,
 ) -> dict[str, Any]:
     """线性模式完成态卡片 — 按 segments 顺序渲染."""
     elements: list[dict] = []
@@ -549,7 +551,7 @@ def build_linear_complete_card(
         if seg.type == "reasoning":
             if seg.text:
                 elements.append(_build_reasoning_panel(
-                    seg.text, seg.elapsed_ms, expanded=True,
+                    seg.text, seg.elapsed_ms, expanded=panel_expanded,
                     element_id=None, text_element_id=None,
                 ))
         elif seg.type == "tool":
@@ -557,7 +559,7 @@ def build_linear_complete_card(
             end = seg.tool_end_offset if seg.tool_end_offset else len(all_tool_steps)
             steps = all_tool_steps[start:end]
             if steps:
-                elements.append(_build_tool_panel(steps, expanded=True, element_id=None))
+                elements.append(_build_tool_panel(steps, expanded=panel_expanded, element_id=None))
         elif seg.type == "answer" and seg.text:
             has_answer = True
             content = _downgrade_tables(optimize_markdown_style(seg.text))
