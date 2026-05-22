@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from hermes_lark_streaming.controller import CardSession, StreamCardController
+from hermes_lark_streaming.controller_linear_mixin import _estimate_segment_elements
 from hermes_lark_streaming.controller_mixin import (
     COMPLETED,
     FAILED,
@@ -136,6 +137,39 @@ def _setup_ctrl(*, linear: bool = False) -> StreamCardController:
     ctrl._initialized = True
     ctrl._client = _mock_client()
     return ctrl
+
+
+def _capture_split_calls(
+    ctrl: StreamCardController,
+    *,
+    cards: list[str] | None = None,
+    messages: list[str] | None = None,
+    create_error: Exception | None = None,
+) -> list[tuple[str, str]]:
+    calls: list[tuple[str, str]] = []
+    client = ctrl._client
+    card_iter = iter(cards or ["card_next"])
+    message_iter = iter(messages or ["msg_next"])
+
+    client.cardkit_batch_update = AsyncMock(
+        side_effect=lambda card_id, *a, **k: calls.append(("batch", card_id))
+    )
+    if create_error is None:
+        client.cardkit_create = AsyncMock(
+            side_effect=lambda *a, **k: calls.append(("create", "")) or next(card_iter)
+        )
+    else:
+        client.cardkit_create = AsyncMock(side_effect=create_error)
+    client.reply_card_by_id = AsyncMock(
+        side_effect=lambda *a, **k: calls.append(("reply", "")) or next(message_iter)
+    )
+    client.cardkit_close_streaming = AsyncMock(
+        side_effect=lambda card_id, **k: calls.append(("close", card_id))
+    )
+    client.cardkit_update = AsyncMock(
+        side_effect=lambda card_id, *a, **k: calls.append(("seal", card_id))
+    )
+    return calls
 
 
 # ── Dispatch 测试 — 线性模式分流 ──
@@ -319,6 +353,237 @@ class TestDoLinearFlush:
         # step3: tool created
         tool_seg = session.linear_state.segments[2]
         assert tool_seg.created is True
+
+    @pytest.mark.asyncio
+    async def test_no_split_keeps_original_single_card_flow(self) -> None:
+        """低于阈值时仍是原来的单卡 flush：只 batch/stream 当前 card，不触发拆卡 API."""
+        ctrl = _setup_ctrl()
+        session = _make_session("msg_no_split", linear=True)
+        session.state = STREAMING
+        session.card_id = "card_no_split"
+        session.element_count = 1
+        session.linear_state.on_reasoning_delta("think")
+        session.linear_state.on_answer_delta("hello")
+        ctrl._sessions["msg_no_split"] = session
+
+        await ctrl._do_linear_flush(session)
+
+        assert session.split_index == 0
+        assert session.card_id == "card_no_split"
+        assert [s.created for s in session.linear_state.segments] == [True, True]
+        assert [s.dirty for s in session.linear_state.segments] == [False, False]
+        ctrl._client.cardkit_create.assert_not_called()
+        ctrl._client.reply_card_by_id.assert_not_called()
+        ctrl._client.cardkit_close_streaming.assert_not_called()
+        ctrl._client.cardkit_update.assert_not_called()
+        ctrl._client.cardkit_batch_update.assert_called_once()
+        assert ctrl._client.cardkit_stream_element.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_split_flushes_pending_actions_then_moves_to_next_card(self) -> None:
+        """超阈值时先把 pending segment 写入旧卡，再封旧卡并把后续 segment 写入新卡."""
+        ctrl = _setup_ctrl()
+        calls = _capture_split_calls(ctrl)
+
+        session = _make_session("msg_split", linear=True)
+        session.state = STREAMING
+        session.card_id = "card_old"
+        session.card_msg_id = "msg_old"
+        session.element_count = 174
+        session.linear_state.on_reasoning_delta("old")
+        session.linear_state.segments[0].created = True
+        session.linear_state.segments[0].dirty = False
+        session.linear_state.on_answer_delta("pending answer")
+        session.tool_use.record_start("read", "file")
+        session.linear_state.on_tool_event(1)
+        ctrl._sessions["msg_split"] = session
+
+        await ctrl._do_linear_flush(session)
+
+        assert calls == [
+            ("batch", "card_old"),
+            ("create", ""),
+            ("reply", ""),
+            ("close", "card_old"),
+            ("seal", "card_old"),
+            ("batch", "card_next"),
+        ]
+        assert session.card_id == "card_next"
+        assert session.card_msg_id == "msg_next"
+        assert session.split_index == 2
+        assert session.split_disabled is False
+        assert session.element_count > 1
+        assert [s.created for s in session.linear_state.segments] == [True, True, True]
+
+    @pytest.mark.asyncio
+    async def test_tool_growth_rolls_over_at_step_boundary(self) -> None:
+        """同一个 tool segment 增长超阈值时，在 step 边界拆到新卡继续更新."""
+        ctrl = _setup_ctrl()
+        calls = _capture_split_calls(
+            ctrl,
+            cards=["card_tool_next"],
+            messages=["msg_tool_next"],
+        )
+
+        session = _make_session("msg_tool_roll", linear=True)
+        session.state = STREAMING
+        session.card_id = "card_tool_old"
+        session.card_msg_id = "msg_tool_old"
+        session.tool_use.record_start("read", "file0")
+        session.linear_state.on_tool_event(1)
+        tool_seg = session.linear_state.segments[0]
+        tool_seg.created = True
+        tool_seg.element_estimate = _estimate_segment_elements(tool_seg, session.tool_use.build_display_steps())
+        session.element_count = 174
+
+        for idx in range(1, 4):
+            session.tool_use.record_start("read", f"file{idx}")
+        session.linear_state.on_tool_event(len(session.tool_use.build_display_steps()))
+        ctrl._sessions["msg_tool_roll"] = session
+
+        await ctrl._do_linear_flush(session)
+
+        assert calls == [
+            ("batch", "card_tool_old"),
+            ("create", ""),
+            ("reply", ""),
+            ("close", "card_tool_old"),
+            ("seal", "card_tool_old"),
+            ("batch", "card_tool_next"),
+        ]
+        assert session.card_id == "card_tool_next"
+        assert session.split_index == 1
+        assert len(session.linear_state.segments) == 2
+        assert session.linear_state.segments[0].tool_end_offset == 1
+        assert session.linear_state.segments[1].tool_offset == 1
+        assert session.linear_state.segments[1].created is True
+
+    @pytest.mark.asyncio
+    async def test_oversized_new_tool_segment_splits_across_multiple_cards(self) -> None:
+        """单次 flush 内 tool steps 很多时，未创建的 tool segment 也会连续分片拆卡."""
+        ctrl = _setup_ctrl()
+        calls = _capture_split_calls(
+            ctrl,
+            cards=["card_tool_page_2", "card_tool_page_3"],
+            messages=["msg_tool_page_2", "msg_tool_page_3"],
+        )
+
+        session = _make_session("msg_tool_many", linear=True)
+        session.state = STREAMING
+        session.card_id = "card_tool_page_1"
+        session.card_msg_id = "msg_tool_page_1"
+        session.element_count = 1
+        session.tool_use.record_start("check")
+        session.linear_state.on_tool_event(1)
+        for _ in range(127):
+            session.tool_use.record_start("check")
+        session.linear_state.on_tool_event(len(session.tool_use.build_display_steps()))
+        ctrl._sessions["msg_tool_many"] = session
+
+        await ctrl._do_linear_flush(session)
+
+        assert calls == [
+            ("batch", "card_tool_page_1"),
+            ("create", ""),
+            ("reply", ""),
+            ("close", "card_tool_page_1"),
+            ("seal", "card_tool_page_1"),
+            ("batch", "card_tool_page_2"),
+            ("create", ""),
+            ("reply", ""),
+            ("close", "card_tool_page_2"),
+            ("seal", "card_tool_page_2"),
+            ("batch", "card_tool_page_3"),
+        ]
+        assert session.card_id == "card_tool_page_3"
+        assert session.card_msg_id == "msg_tool_page_3"
+        assert session.split_index == 2
+        assert len(session.linear_state.segments) == 3
+        assert [s.tool_offset for s in session.linear_state.segments] == [0, 58, 116]
+        assert [s.tool_end_offset for s in session.linear_state.segments] == [58, 116, 0]
+        assert all(s.created for s in session.linear_state.segments)
+        assert session.linear_state.segments[-1].element_estimate + session.element_count <= 180
+
+    @pytest.mark.asyncio
+    async def test_tool_rollover_create_failure_falls_back_on_current_card(self) -> None:
+        """tool rollover 新卡创建失败后，在当前卡保留 step 分界并禁用后续拆卡重试."""
+        ctrl = _setup_ctrl()
+        batch_card_ids = _capture_split_calls(ctrl, create_error=RuntimeError("create failed"))
+        client = ctrl._client
+
+        session = _make_session("msg_tool_roll_fallback", linear=True)
+        session.state = STREAMING
+        session.card_id = "card_tool_current"
+        session.card_msg_id = "msg_tool_current"
+        session.tool_use.record_start("read", "file0")
+        session.linear_state.on_tool_event(1)
+        tool_seg = session.linear_state.segments[0]
+        tool_seg.created = True
+        tool_seg.element_estimate = _estimate_segment_elements(tool_seg, session.tool_use.build_display_steps())
+        session.element_count = 174
+
+        for idx in range(1, 4):
+            session.tool_use.record_start("read", f"file{idx}")
+        session.linear_state.on_tool_event(len(session.tool_use.build_display_steps()))
+        ctrl._sessions["msg_tool_roll_fallback"] = session
+
+        await ctrl._do_linear_flush(session)
+
+        assert session.card_id == "card_tool_current"
+        assert session.split_index == 0
+        assert session.split_disabled is True
+        assert len(session.linear_state.segments) == 2
+        assert session.linear_state.segments[0].tool_end_offset == 1
+        assert session.linear_state.segments[1].tool_offset == 1
+        assert session.linear_state.segments[1].created is True
+        assert batch_card_ids == [("batch", "card_tool_current"), ("batch", "card_tool_current")]
+        client.cardkit_close_streaming.assert_not_called()
+        client.cardkit_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_split_create_failure_falls_back_to_current_card(self) -> None:
+        """新卡创建失败是有意降级：不推进 split_index，继续把后续内容写回当前卡."""
+        ctrl = _setup_ctrl()
+        batch_card_ids = _capture_split_calls(ctrl, create_error=RuntimeError("create failed"))
+        client = ctrl._client
+
+        session = _make_session("msg_split_fallback", linear=True)
+        session.state = STREAMING
+        session.card_id = "card_current"
+        session.card_msg_id = "msg_current"
+        session.element_count = 174
+        session.linear_state.on_reasoning_delta("old")
+        session.linear_state.segments[0].created = True
+        session.linear_state.segments[0].dirty = False
+        session.linear_state.on_answer_delta("pending answer")
+        session.tool_use.record_start("read", "file")
+        session.linear_state.on_tool_event(1)
+        ctrl._sessions["msg_split_fallback"] = session
+
+        await ctrl._do_linear_flush(session)
+
+        assert session.card_id == "card_current"
+        assert session.card_msg_id == "msg_current"
+        assert session.split_index == 0
+        assert session.split_disabled is True
+        assert session.element_count > 174
+        assert batch_card_ids == [("batch", "card_current"), ("batch", "card_current")]
+        assert session.linear_state.segments[2].created is True
+        client.cardkit_close_streaming.assert_not_called()
+        client.cardkit_update.assert_not_called()
+
+        client.cardkit_create.reset_mock()
+        session.linear_state.on_answer_delta(" after fallback")
+
+        await ctrl._do_linear_flush(session)
+
+        client.cardkit_create.assert_not_called()
+        assert batch_card_ids == [
+            ("batch", "card_current"),
+            ("batch", "card_current"),
+            ("batch", "card_current"),
+        ]
+        assert session.linear_state.segments[-1].created is True
 
     @pytest.mark.asyncio
     async def test_reasoning_finalized_snapshot(self) -> None:

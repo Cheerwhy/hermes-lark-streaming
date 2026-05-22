@@ -55,6 +55,7 @@ class CardSession:
         "deferred_background_review_closed",
         "deferred_background_review_lock",
         "deferred_background_reviews",
+        "element_count",
         "flush",
         "footer",
         "guard",
@@ -68,6 +69,8 @@ class CardSession:
         "reasoning_start",
         "reasoning_text",
         "sequence",
+        "split_disabled",
+        "split_index",
         "state",
         "text",
         "tool_panel_added",
@@ -113,6 +116,9 @@ class CardSession:
         self.tool_panel_added = False
         self.linear = False
         self.linear_state: LinearState | None = None
+        self.element_count: int = 0
+        self.split_disabled = False
+        self.split_index: int = 0
 
 
 class StreamCardController(ControllerMixin, LinearControllerMixin):

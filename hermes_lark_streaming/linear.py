@@ -13,6 +13,7 @@ class Segment:
         "dirty",
         "el_id",
         "elapsed_ms",
+        "element_estimate",
         "reasoning_finalized",
         "start_time",
         "text",
@@ -27,6 +28,7 @@ class Segment:
         self.el_id = el_id
         self.created = False
         self.dirty = True
+        self.element_estimate: int = 0
         self.text: str = ""
         self.text_el_id: str = ""
         self.tool_offset: int = 0
@@ -118,6 +120,24 @@ class LinearState:
                 seg.dirty = True
                 break
         self._new_tool(tool_step_count - 1)
+
+    def split_tool_segment(
+        self,
+        index: int,
+        split_tool_offset: int,
+    ) -> Segment:
+        """在 step 边界拆分一个 tool segment，返回承接后续 steps 的新 segment."""
+        seg = self.segments[index]
+        c = self._counter
+        self._counter += 1
+        new_seg = Segment("tool", f"tools_{c}")
+        new_seg.tool_offset = split_tool_offset
+        new_seg.tool_end_offset = seg.tool_end_offset
+        new_seg.start_time = seg.start_time
+        seg.tool_end_offset = split_tool_offset
+        seg.dirty = True
+        self.segments.insert(index + 1, new_seg)
+        return new_seg
 
     def finalize_segments(self, total_tool_count: int) -> None:
         """完成态调用：终结最后一个 tool segment + 补算最后一个 reasoning elapsed_ms."""

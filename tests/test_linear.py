@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+from hermes_lark_streaming import linear as linear_module
 from hermes_lark_streaming.linear import LinearState, Segment
 
 
@@ -17,6 +18,7 @@ class TestSegmentDefaults:
             assert seg.el_id == el_id
             assert seg.created is False
             assert seg.dirty is True
+            assert seg.element_estimate == 0
             assert seg.text == ""
             assert seg.tool_offset == 0
             assert seg.tool_end_offset == 0
@@ -186,7 +188,10 @@ class TestMultiRound:
         assert state.segments[2].el_id == "tools_2"
         assert state.segments[3].el_id == "reasoning_3_panel"
 
-    def test_finalize_complex_scenario(self) -> None:
+    def test_finalize_complex_scenario(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        times = iter(float(i) for i in range(100, 108))
+        monkeypatch.setattr(linear_module.time, "time", lambda: next(times))
+
         state = LinearState()
         state.on_reasoning_delta("r1")
         state.on_answer_delta("a1")
@@ -200,4 +205,4 @@ class TestMultiRound:
         assert state.segments[0].elapsed_ms > 0  # r1 finalized by a1
         assert state.segments[2].tool_end_offset == 3  # tool1 finalized by tool2
         assert state.segments[4].tool_end_offset == 5  # tool2 finalized by finalize
-        assert state.segments[5].elapsed_ms > 0  # r2 finalized by finalize
+        assert state.segments[5].elapsed_ms > 0  # r2 finalized by a2
