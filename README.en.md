@@ -121,6 +121,8 @@ Default (when not configured): `fields: [[status, elapsed, context, model]]`, `s
 
 When enabled, the plugin dynamically renders thinking, tool call, and answer elements in event arrival order. Reasoning and tool calls are no longer collapsed to the top — multi-round content is displayed in actual order.
 
+When long conversations or excessive tool steps cause the card to approach Feishu's 200-element limit, it automatically splits into multiple cards: the old card is sealed with complete data, a new card continues streaming, and only the last card includes the footer. Oversized tool panels are also split at step boundaries.
+
 ```yaml
 streaming:
   enabled: true

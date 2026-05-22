@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.5] - 2026-05-22
+
+### Highlights
+
+- 线性模式多卡拆分：长对话自动在飞书卡片元素接近 200 上限时拆分为多张卡片，数据完整不丢失
+- 超长工具调用拆分：单个工具面板步骤过多时按 step 边界拆分到多张卡片
+
+### 修复
+
+- 修复长对话导致飞书卡片元素超限（300305）的问题。修复 #21. (#23)
+- 修复长输出底部 markdown 表格失效的问题。修复 #14. (#23)
+
+### Highlights
+
+- Linear mode multi-card split: automatically splits into multiple cards when approaching Feishu's 200-element limit, preserving all data
+- Oversized tool call split: splits tool panels with too many steps across cards at step boundaries
+
+### Fixed
+
+- Fix long conversations exceeding Feishu card element limit (300305). Fixes #21. (#23)
+- Fix markdown tables at bottom of long outputs not rendering. Fixes #14. (#23)
+
+---
+
 ## [0.6.2] - 2026-05-21
 
 ### 修复
