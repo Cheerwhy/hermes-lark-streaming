@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from .image import ImageResolver
 
 _logger = logging.getLogger("hermes_lark_streaming")
+_CARD_CREATION_WAIT_SEC = 10.0
 
 
 class CardSession:
@@ -52,6 +53,7 @@ class CardSession:
         "card_id",
         "card_msg_id",
         "chat_id",
+        "create_task",
         "created_at",
         "deferred_background_review_closed",
         "deferred_background_review_lock",
@@ -88,6 +90,7 @@ class CardSession:
         self.message_id = message_id
         self.anchor_id: str | None = None
         self.chat_id = chat_id
+        self.create_task: asyncio.Future[Any] | ConcurrentFuture | None = None
         self.state = IDLE
         self.card_msg_id: str | None = None
         self.card_id: str | None = None
@@ -186,15 +189,23 @@ class StreamCardController(ControllerMixin, LinearControllerMixin):
             return None
         return session
 
-    def _fire_and_forget(self, coro: Coroutine[Any, Any, Any], loop: asyncio.AbstractEventLoop) -> None:
+    def _fire_and_forget(
+        self,
+        coro: Coroutine[Any, Any, Any],
+        loop: asyncio.AbstractEventLoop,
+    ) -> asyncio.Future[Any] | ConcurrentFuture | None:
         try:
-            loop.create_task(coro)
+            task = loop.create_task(coro)
+            task.add_done_callback(self._on_bg_task_done)
+            return task
         except RuntimeError:
             try:
                 fut = asyncio.run_coroutine_threadsafe(coro, loop)
                 fut.add_done_callback(self._on_bg_task_done)
+                return fut
             except Exception:
                 _logger.debug("fire_and_forget failed", exc_info=True)
+                return None
 
     def on_message_started(
         self,
@@ -226,9 +237,9 @@ class StreamCardController(ControllerMixin, LinearControllerMixin):
         _logger.info("session created: msg=%s chat=%s anchor=%s", message_id[:12], chat_id[:12], (anchor_id or "")[:12])
 
         if self._cfg.linear:
-            self._fire_and_forget(self._do_create_linear_card(session), loop)
+            session.create_task = self._fire_and_forget(self._do_create_linear_card(session), loop)
         else:
-            self._fire_and_forget(self._do_create_card(session), loop)
+            session.create_task = self._fire_and_forget(self._do_create_card(session), loop)
 
     def on_thinking(self, *, message_id: str, text: str) -> None:
         """思考内容增量."""
@@ -399,9 +410,9 @@ class StreamCardController(ControllerMixin, LinearControllerMixin):
                     (reply_anchor_id or new_message_id)[:12],
                 )
                 if self._cfg.linear:
-                    self._fire_and_forget(self._do_create_linear_card(session), loop)
+                    session.create_task = self._fire_and_forget(self._do_create_linear_card(session), loop)
                 else:
-                    self._fire_and_forget(self._do_create_card(session), loop)
+                    session.create_task = self._fire_and_forget(self._do_create_card(session), loop)
 
         self._interrupt_map[old_message_id] = new_message_id
         for key, val in list(self._interrupt_map.items()):
@@ -449,20 +460,69 @@ class StreamCardController(ControllerMixin, LinearControllerMixin):
             session.use_cardkit,
         )
 
-        if answer:
-            session.text.on_deliver(answer)
-
-        session.footer = {
-            "duration": duration,
-            "model": model,
-            **({"input_tokens": tokens.get("input_tokens")} if tokens else {}),
-            **({"output_tokens": tokens.get("output_tokens")} if tokens else {}),
-            **({"context_used": context.get("used_tokens")} if context else {}),
-            **({"context_max": context.get("max_tokens")} if context else {}),
-        }
+        self._apply_completion_payload(
+            session=session,
+            answer=answer,
+            duration=duration,
+            model=model,
+            tokens=tokens,
+            context=context,
+        )
 
         self._complete_session(session)
         return True
+
+    async def on_completed_wait(
+        self,
+        *,
+        message_id: str,
+        answer: str = "",
+        duration: float = 0.0,
+        model: str = "",
+        tokens: dict | None = None,
+        context: dict | None = None,
+    ) -> bool:
+        """消息处理完成，并等待卡片真正收尾后返回是否已发送."""
+        if not self.enabled:
+            return False
+        session = self._completion_session(message_id)
+        if session is None:
+            return False
+        message_id = session.message_id
+
+        if not await self._wait_for_card_creation(session):
+            _logger.info("on_completed_wait: msg=%s card creation not ready, yielding to gateway", message_id[:12])
+            self._cleanup(message_id)
+            return False
+
+        if session.state == FAILED:
+            _logger.info("on_completed_wait: msg=%s state=FAILED, yielding to gateway", message_id[:12])
+            self._cleanup(message_id)
+            return False
+
+        if not session.card_msg_id and not session.card_id:
+            _logger.info("on_completed_wait: msg=%s has no card, yielding to gateway", message_id[:12])
+            self._cleanup(message_id)
+            return False
+
+        _logger.info(
+            "on_completed_wait: msg=%s has_card=%s state=%s use_cardkit=%s",
+            message_id[:12],
+            bool(session.card_msg_id),
+            session.state,
+            session.use_cardkit,
+        )
+
+        self._apply_completion_payload(
+            session=session,
+            answer=answer,
+            duration=duration,
+            model=model,
+            tokens=tokens,
+            context=context,
+        )
+
+        return await self._complete_session_wait(session)
 
     def on_cron_deliver(
         self,
@@ -557,6 +617,73 @@ class StreamCardController(ControllerMixin, LinearControllerMixin):
         if session.image_resolver:
             session.image_resolver.cancel_pending()
 
+    def _completion_session(self, message_id: str) -> CardSession | None:
+        session = self._get_active_session(message_id)
+        if session is None:
+            redirected_id = self._interrupt_map.pop(message_id, None)
+            if redirected_id is not None:
+                _logger.info(
+                    "on_completed: redirect msg=%s -> msg=%s",
+                    message_id[:12],
+                    redirected_id[:12],
+                )
+                session = self._get_active_session(redirected_id)
+        return session
+
+    async def _wait_for_card_creation(self, session: CardSession) -> bool:
+        task = session.create_task
+        if task is None:
+            return True
+        try:
+            if isinstance(task, asyncio.Future):
+                await asyncio.wait_for(task, timeout=_CARD_CREATION_WAIT_SEC)
+            else:
+                await asyncio.wait_for(asyncio.wrap_future(task), timeout=_CARD_CREATION_WAIT_SEC)
+            return True
+        except TimeoutError:
+            _logger.warning(
+                "card creation timed out: msg=%s timeout=%.1fs",
+                session.message_id[:12],
+                _CARD_CREATION_WAIT_SEC,
+            )
+            task.cancel()
+            session.state = FAILED
+            return False
+        except asyncio.CancelledError:
+            session.state = FAILED
+            return False
+        except Exception:
+            _logger.debug("card creation task failed", exc_info=True)
+            return False
+
+    def _apply_completion_payload(
+        self,
+        *,
+        session: CardSession,
+        answer: str,
+        duration: float,
+        model: str,
+        tokens: dict | None,
+        context: dict | None,
+    ) -> None:
+        if answer:
+            if session.linear and session.linear_state and not any(
+                seg.type == "answer" for seg in session.linear_state.segments
+            ):
+                final_answer = strip_reasoning_tags(answer)
+                if final_answer:
+                    session.linear_state.on_answer_delta(final_answer)
+            session.text.on_deliver(answer)
+
+        session.footer = {
+            "duration": duration,
+            "model": model,
+            **({"input_tokens": tokens.get("input_tokens")} if tokens else {}),
+            **({"output_tokens": tokens.get("output_tokens")} if tokens else {}),
+            **({"context_used": context.get("used_tokens")} if context else {}),
+            **({"context_max": context.get("max_tokens")} if context else {}),
+        }
+
     def _complete_session(self, session: CardSession) -> None:
         """根据 session 线性/非线性选择完成路径."""
         session.flush.mark_completed()
@@ -564,6 +691,13 @@ class StreamCardController(ControllerMixin, LinearControllerMixin):
             self._fire_and_forget(self._do_linear_complete(session), session._loop)
         else:
             self._fire_and_forget(self._do_complete(session), session._loop)
+
+    async def _complete_session_wait(self, session: CardSession) -> bool:
+        """根据 session 线性/非线性完成，并等待最终 API 结果."""
+        session.flush.mark_completed()
+        if session.linear and session.linear_state:
+            return await self._do_linear_complete(session)
+        return await self._do_complete(session)
 
     def _prune_stale_sessions(self) -> None:
         now = time.time()
@@ -573,9 +707,11 @@ class StreamCardController(ControllerMixin, LinearControllerMixin):
             self._cleanup(mid)
 
     @staticmethod
-    def _on_bg_task_done(fut: ConcurrentFuture) -> None:
+    def _on_bg_task_done(fut: asyncio.Future[Any] | ConcurrentFuture) -> None:
         try:
             fut.result()
+        except asyncio.CancelledError:
+            return
         except Exception:
             _logger.warning("background task failed", exc_info=True)
 

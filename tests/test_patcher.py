@@ -169,7 +169,8 @@ class TestApplyRemove:
         assert "_lark_next_message_id = getattr(pending_event, 'message_id', None) or next_message_id" in content
         assert "new_message_id=_lark_next_message_id" in content
         assert "anchor_id=_lark_next_anchor_id" in content
-        assert "on_message_completed(" in content
+        assert "on_message_completed_wait(" in content
+        assert "_lark_card_sent = await on_message_completed_wait(" in content
         assert "message_id=event.message_id" in content
         assert "on_answer_delta(message_id=event_message_id" in content
         assert "on_thinking_delta(message_id=event_message_id" in content

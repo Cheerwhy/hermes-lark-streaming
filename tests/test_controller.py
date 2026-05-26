@@ -177,6 +177,76 @@ def _setup_ctrl(*, linear: bool = False) -> StreamCardController:
     return ctrl
 
 
+class TestAwaitedCompletion:
+    @pytest.mark.asyncio
+    async def test_waits_for_queued_card_creation_before_success(self) -> None:
+        ctrl = _setup_ctrl()
+        session = CardSession("msg_wait", "chat", asyncio.get_running_loop())
+        ctrl._sessions["msg_wait"] = session
+        ready = asyncio.Event()
+
+        async def finish_create() -> None:
+            await ready.wait()
+            session.card_id = "card_wait"
+            session.card_msg_id = "card_msg_wait"
+            session.state = STREAMING
+
+        session.create_task = asyncio.create_task(finish_create())
+
+        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True) as complete:
+            waiter = asyncio.create_task(ctrl.on_completed_wait(message_id="msg_wait", answer="ok"))
+            await asyncio.sleep(0.01)
+            assert not waiter.done()
+
+            ready.set()
+
+            assert await waiter is True
+            complete.assert_awaited_once_with(session)
+
+    @pytest.mark.asyncio
+    async def test_card_creation_timeout_yields_to_gateway(self) -> None:
+        ctrl = _setup_ctrl()
+        session = CardSession("msg_timeout", "chat", asyncio.get_running_loop())
+        ctrl._sessions["msg_timeout"] = session
+        session.create_task = asyncio.create_task(asyncio.sleep(60))
+
+        with patch("hermes_lark_streaming.controller._CARD_CREATION_WAIT_SEC", 0.01):
+            assert await ctrl.on_completed_wait(message_id="msg_timeout", answer="ok") is False
+
+        assert session.state == FAILED
+        assert "msg_timeout" not in ctrl._sessions
+
+    @pytest.mark.asyncio
+    async def test_finalization_failure_yields_to_gateway(self) -> None:
+        ctrl = _setup_ctrl()
+        session = CardSession("msg_fail", "chat", asyncio.get_running_loop())
+        session.state = STREAMING
+        session.card_id = "card_fail"
+        session.card_msg_id = "card_msg_fail"
+        ctrl._sessions["msg_fail"] = session
+
+        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=False):
+            assert await ctrl.on_completed_wait(message_id="msg_fail", answer="ok") is False
+
+    @pytest.mark.asyncio
+    async def test_linear_short_reply_adds_final_answer_segment(self) -> None:
+        ctrl = _setup_ctrl(linear=True)
+        session = CardSession("msg_linear", "chat", asyncio.get_running_loop())
+        session.state = STREAMING
+        session.linear = True
+        session.linear_state = LinearState()
+        session.card_id = "card_linear"
+        session.card_msg_id = "card_msg_linear"
+        ctrl._sessions["msg_linear"] = session
+
+        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
+            assert await ctrl.on_completed_wait(message_id="msg_linear", answer="short") is True
+
+        assert len(session.linear_state.segments) == 1
+        assert session.linear_state.segments[0].type == "answer"
+        assert session.linear_state.segments[0].text == "short"
+
+
 @pytest.mark.asyncio
 async def test_create_card_replies_to_anchor_id() -> None:
     ctrl = _setup_ctrl()
@@ -261,7 +331,10 @@ class TestLinearDispatch:
         session.state = STREAMING
         session.card_id = "card_123"
         ctrl._sessions["msg_c"] = session
-        with patch.object(ctrl, "_do_linear_complete", new_callable=AsyncMock):
+        with (
+            patch.object(ctrl, "_do_linear_complete", new_callable=AsyncMock),
+            patch.object(ctrl, "_fire_and_forget", side_effect=lambda coro, loop: coro.close()),
+        ):
             ctrl.on_completed(message_id="msg_c")
         assert session.flush._completed
 

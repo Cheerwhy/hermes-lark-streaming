@@ -123,6 +123,35 @@ def on_message_completed(
     )
 
 
+async def on_message_completed_wait(
+    *,
+    message_id: str,
+    answer: str = "",
+    duration: float = 0.0,
+    model: str = "",
+    tokens: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> bool:
+    """[注入点 2] return 前 — message.completed，等待卡片完成收尾."""
+    try:
+        ctrl = get_controller()
+        if not ctrl.enabled:
+            return False
+        return bool(
+            await ctrl.on_completed_wait(
+                message_id=message_id,
+                answer=answer,
+                duration=duration,
+                model=model,
+                tokens=tokens,
+                context=context,
+            )
+        )
+    except Exception as exc:
+        _logger.warning("on_message_completed_wait error: %s", exc, exc_info=True)
+        return False
+
+
 @_safe_hook(default_return=False)
 def on_tool_updated(
     *,

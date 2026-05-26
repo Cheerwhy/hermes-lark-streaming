@@ -193,7 +193,7 @@ The plugin injects hook calls into `gateway/run.py` and `cron/scheduler.py` via 
 | `on_background_review_message` | At `background_review_callback` assignment | Defers self-evolution messages until card completion |
 | `on_message_aborted` | Before stale `return None` | Handles `/stop` abort |
 | `on_message_interrupted` | Before recursive `_run_agent` call | Handles message interrupts, terminates old card and creates new session |
-| `on_message_completed` | Before `return response` | Sends completion card |
+| `on_message_completed_wait` | Before `return response` | Waits for card creation/finalization before sending the completion card; yields to gateway text fallback on failure |
 | `on_cron_deliver` | After `delivered = False` in `_deliver_result` | Intercepts Feishu cron delivery, sends as card |
 
 **Message flow:**

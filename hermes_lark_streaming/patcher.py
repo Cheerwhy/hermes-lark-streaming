@@ -99,8 +99,8 @@ def _complete_hook(indent: str) -> str:
         MK_COMPLETE_END,
         [
             "try:",
-            "    from hermes_lark_streaming.patch import on_message_completed",
-            "    _lark_card_sent = on_message_completed(",
+            "    from hermes_lark_streaming.patch import on_message_completed_wait",
+            "    _lark_card_sent = await on_message_completed_wait(",
             "        message_id=event.message_id,",
             "        answer=response,",
             "        duration=_response_time,",

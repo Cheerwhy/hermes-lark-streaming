@@ -42,7 +42,7 @@ gateway/run.py (Hermes)
        ├─ on_reasoning_delta    → controller.on_reasoning()
        ├─ on_background_review_message → controller.defer_background_review()
        ├─ on_message_interrupted → controller.on_interrupted()
-       ├─ on_message_completed  → controller.on_completed()
+       ├─ on_message_completed_wait → controller.on_completed_wait()
        └─ on_message_aborted    → controller.on_aborted()
 
 cron/scheduler.py (Hermes)
@@ -77,7 +77,8 @@ Card templates (cardkit.py) — builds Feishu card JSON
 ## Key Constraints
 
 - Hermes `>= 0.11.0` (2026.4.23) required. `patcher.py` targets specific function names in Hermes's `gateway/run.py` (`_handle_message_with_agent`, `progress_callback`, `_stream_delta_cb`, `_interim_assistant_cb`) and `cron/scheduler.py` (`_deliver_result`). If Hermes changes these, `verify` will catch it.
-- The interrupt hook is injected at the `"Restart typing indicator"` comment in `_run_agent`. It fires when `was_interrupted and next_message_id` are both truthy. The `_interrupt_map` redirects `on_completed(old_id)` to the new session, handling nested interrupts (A→B→C).
+- The interrupt hook is injected at the `"Restart typing indicator"` comment in `_run_agent`. It fires when `was_interrupted and next_message_id` are both truthy. The `_interrupt_map` redirects completion from `old_id` to the new session, handling nested interrupts (A→B→C).
+- The completion hook installed into `gateway/run.py` is async: `on_message_completed_wait` awaits queued CardKit creation/finalization before setting `already_sent`. The legacy sync `on_message_completed` entrypoint remains for compatibility with older installed patches.
 - The `_thinking_hook` has a `not already_streamed` guard (patcher.py:103) — thinking deltas are skipped once answer streaming has begun.
 - The NORMALIZE hook (`on_feishu_normalize`) is injected at `source = event.source` in `_handle_message`, before any other processing. It detects Feishu quoted messages with a false `thread_id` (set by the Feishu adapter but absent in raw event) and clears it, preventing `_reply_anchor_for_event` from returning the wrong ID.
 - The `anchor_id` mechanism: for Feishu quoted messages, `_reply_anchor_for_event(event)` returns `reply_to_message_id` instead of `event.message_id`. The START hook passes both — `message_id` for session identity and streaming callback lookup, `anchor_id` for card delivery (reply target). Sessions are registered under both keys.

@@ -193,7 +193,7 @@ $HERMES_PYTHON -m pip uninstall hermes-lark-streaming
 | `on_background_review_message` | `background_review_callback` 赋值处 | 延迟自我进化消息到卡片完成后再发送 |
 | `on_message_aborted` | stale `return None` 之前 | 处理 `/stop` 中断 |
 | `on_message_interrupted` | `_run_agent` 递归调用前 | 处理消息打断，终止旧卡片并创建新会话 |
-| `on_message_completed` | `return response` 之前 | 发送终态卡片 |
+| `on_message_completed_wait` | `return response` 之前 | 等待卡片创建/收尾完成后发送终态卡片，失败时让网关走文本兜底 |
 | `on_cron_deliver` | `_deliver_result` 中 `delivered = False` 之后 | 拦截飞书 Cron 推送，以卡片形式发送 |
 
 **消息处理流程：**
