@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.3] - 2026-05-26
+
+### 修复
+
+- 修复短回复场景下 CardKit 卡片未正确收尾的异步竞态问题。修复 #32. (#34)
+- 修复 Clarify 工具面板重复显示问题文本为原始代码块。修复 #33. (#35)
+
+### Fixed
+
+- Fix CardKit completion race condition in short-reply scenarios where streaming card may not finalize correctly. Fixes #32. (#34)
+- Fix Clarify tool panel rendering question text as redundant raw code block. Fixes #33. (#35)
+
 ## [0.7.1] - 2026-05-26
 
 ### 新增
