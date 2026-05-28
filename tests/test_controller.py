@@ -10,12 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hermes_lark_streaming.controller import StreamCardController
-from hermes_lark_streaming.controller_mixin import (
-    _estimate_segment_elements,
-)
 from hermes_lark_streaming.feishu import FeishuAPIError, FeishuClient
-from hermes_lark_streaming.segments import Segment, SegmentState
-from hermes_lark_streaming.session import CardSession, SessionState
+from hermes_lark_streaming.streaming.segment_helper import estimate_segment_elements
+from hermes_lark_streaming.streaming.segments import Segment, SegmentState
+from hermes_lark_streaming.streaming.session import CardSession, SessionState
 
 
 def _enable(ctrl: StreamCardController) -> None:
@@ -555,7 +553,7 @@ class TestDoFlush:
         session.segment_state.on_tool_event(1)
         tool_seg = session.segment_state.segments[0]
         tool_seg.created = True
-        tool_seg.element_estimate = _estimate_segment_elements(tool_seg, session.tool_use.build_display_steps())
+        tool_seg.element_estimate = estimate_segment_elements(tool_seg, session.tool_use.build_display_steps())
         session.element_count = 174
 
         for idx in range(1, 4):
@@ -641,7 +639,7 @@ class TestDoFlush:
         session.segment_state.on_tool_event(1)
         tool_seg = session.segment_state.segments[0]
         tool_seg.created = True
-        tool_seg.element_estimate = _estimate_segment_elements(tool_seg, session.tool_use.build_display_steps())
+        tool_seg.element_estimate = estimate_segment_elements(tool_seg, session.tool_use.build_display_steps())
         session.element_count = 174
 
         for idx in range(1, 4):

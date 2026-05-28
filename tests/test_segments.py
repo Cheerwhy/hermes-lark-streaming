@@ -1,4 +1,4 @@
-"""segments.py 测试 — SegmentState 段管理、边界条件、多轮集成."""
+"""streaming.segments 测试 — SegmentState 段管理、边界条件、多轮集成."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from hermes_lark_streaming import segments as segments_module
-from hermes_lark_streaming.segments import Segment, SegmentState
+from hermes_lark_streaming.streaming import segments as segments_module
+from hermes_lark_streaming.streaming.segments import Segment, SegmentState
 
 
 class TestSegmentDefaults:

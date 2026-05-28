@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .feishu import FeishuClient
+    from ..feishu import FeishuClient
 
 _logger = logging.getLogger("hermes_lark_streaming")
 

@@ -1,8 +1,8 @@
-"""text.py 测试 — reasoning 标签解析."""
+"""streaming.text 测试 — reasoning 标签解析."""
 
 from __future__ import annotations
 
-from hermes_lark_streaming.text import (
+from hermes_lark_streaming.streaming.text import (
     extract_thinking_content,
     split_reasoning_text,
     strip_reasoning_tags,

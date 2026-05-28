@@ -1,4 +1,4 @@
-"""tooluse.py 测试 — 脱敏、清洗、显示块构建、工具调用追踪."""
+"""streaming.tooluse 测试 — 脱敏、清洗、显示块构建、工具调用追踪."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_lark_streaming.tooluse import (
+from hermes_lark_streaming.streaming.tooluse import (
     ToolUseTracker,
     _basename_only,
     _build_display_block,
@@ -349,7 +349,7 @@ class TestToolUseTracker:
         steps = tracker.build_display_steps()
         assert "secret_value" not in steps[0]["detail"]
 
-    @patch("hermes_lark_streaming.tooluse.time")
+    @patch("hermes_lark_streaming.streaming.tooluse.time")
     def test_step_elapsed_ms_recorded(self, mock_time: object) -> None:
         mock_time.time.side_effect = [100.0, 100.0, 102.5]
         tracker = ToolUseTracker()

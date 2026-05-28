@@ -1,8 +1,8 @@
-"""cardkit.py 测试 — markdown 优化、表格处理、卡片构建."""
+"""cardkit 包测试 — markdown 优化、表格处理、卡片构建."""
 
 from __future__ import annotations
 
-from hermes_lark_streaming.cardkit import (
+from hermes_lark_streaming.cardkit.builder import (
     REASONING_ELEMENT_ID,
     REASONING_TEXT_ELEMENT_ID,
     TOOL_PANEL_ELEMENT_ID,
@@ -16,14 +16,14 @@ from hermes_lark_streaming.cardkit import (
     build_complete_card,
     build_streaming_card_v2,
 )
-from hermes_lark_streaming.cardkit_md import (
+from hermes_lark_streaming.cardkit.markdown import (
     _downgrade_tables,
     _find_tables_outside_code_blocks,
     _split_long_text,
     _strip_invalid_image_keys,
     optimize_markdown_style,
 )
-from hermes_lark_streaming.segments import Segment
+from hermes_lark_streaming.streaming.segments import Segment
 
 # --- Markdown 优化 ---
 
@@ -501,7 +501,7 @@ class TestBuildSegmentCompleteCard:
 
 class TestBuildCronCard:
     def test_basic_card_structure(self) -> None:
-        from hermes_lark_streaming.cardkit import build_cron_card
+        from hermes_lark_streaming.cardkit.builder import build_cron_card
 
         card = build_cron_card("Hello **world**")
         assert card["schema"] == "2.0"
@@ -509,7 +509,7 @@ class TestBuildCronCard:
         assert "Hello **world**" in card["body"]["elements"][0]["content"]
 
     def test_summary_from_content(self) -> None:
-        from hermes_lark_streaming.cardkit import build_cron_card
+        from hermes_lark_streaming.cardkit.builder import build_cron_card
 
         card = build_cron_card("Line 1\nLine 2\n" + "x" * 200)
         summary = card["config"]["summary"]["content"]
@@ -517,13 +517,13 @@ class TestBuildCronCard:
         assert len(summary) <= 120
 
     def test_empty_content(self) -> None:
-        from hermes_lark_streaming.cardkit import build_cron_card
+        from hermes_lark_streaming.cardkit.builder import build_cron_card
 
         card = build_cron_card("")
         assert card["body"]["elements"] == []
 
     def test_table_content_preserved(self) -> None:
-        from hermes_lark_streaming.cardkit import build_cron_card
+        from hermes_lark_streaming.cardkit.builder import build_cron_card
 
         content = "| A | B |\n|---|---|\n| 1 | 2 |"
         card = build_cron_card(content)

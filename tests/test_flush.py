@@ -1,4 +1,4 @@
-"""flush.py 测试 — FlushController 节流、刷新、完成逻辑."""
+"""streaming.flush 测试 — FlushController 节流、刷新、完成逻辑."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from hermes_lark_streaming.flush import (
+from hermes_lark_streaming.streaming.flush import (
     BATCH_AFTER_GAP_MS,
     LONG_GAP_MS,
     FlushController,

@@ -5,14 +5,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .cardkit_i18n import _LOCALES, _T, _i18n, _t
-from .cardkit_md import (
+from ..streaming.segments import Segment, SegmentType
+from ..streaming.tooluse import ToolDisplayStep
+from .i18n import _LOCALES, _T, _i18n, _t
+from .markdown import (
     _downgrade_tables,
     _split_long_text,
     optimize_markdown_style,
 )
-from .segments import Segment, SegmentType
-from .tooluse import ToolDisplayStep
 
 STREAMING_ELEMENT_ID = "streaming_content"
 REASONING_ELEMENT_ID = "reasoning_content"

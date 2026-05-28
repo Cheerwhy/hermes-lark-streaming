@@ -1,4 +1,4 @@
-"""image.py 测试 — ImageResolver 缓存、上传、失败、pending 逻辑."""
+"""streaming.image 测试 — ImageResolver 缓存、上传、失败、pending 逻辑."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from hermes_lark_streaming.image import ImageResolver
+from hermes_lark_streaming.streaming.image import ImageResolver
 
 
 class TestCancelPending:

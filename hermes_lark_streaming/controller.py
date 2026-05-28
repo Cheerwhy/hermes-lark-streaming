@@ -10,20 +10,20 @@ from concurrent.futures import Future as ConcurrentFuture
 from typing import Any
 
 from .config import Config
-from .controller_mixin import ControllerMixin
 from .feishu import (
     FeishuClient,
     FeishuClientConfig,
 )
-from .segments import SegmentType
-from .session import CardSession, SessionState
-from .text import strip_reasoning_tags
+from .streaming.controller import StreamingController
+from .streaming.segments import SegmentType
+from .streaming.session import CardSession, SessionState
+from .streaming.text import strip_reasoning_tags
 
 _logger = logging.getLogger("hermes_lark_streaming")
 _CARD_CREATION_WAIT_SEC = 10.0
 
 
-class StreamCardController(ControllerMixin):
+class StreamCardController(StreamingController):
     """流式卡片控制器 — 管理多条消息的卡片生命周期."""
 
     def __init__(self) -> None:

@@ -1,4 +1,4 @@
-"""文本累积器 — 增量式流式文本追踪."""
+"""流式文本解析 — reasoning 标签提取与最终回答清理."""
 
 from __future__ import annotations
 

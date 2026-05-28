@@ -21,11 +21,11 @@ $HERMES_PYTHON -m pip install -e .
 $HERMES_PYTHON -m pip install -e ".[dev]"  # test dependencies
 
 # Lint
-$HERMES_PYTHON -m ruff check hermes_lark_streaming/
+$HERMES_PYTHON -m ruff check hermes_lark_streaming tests
 $HERMES_PYTHON -m mypy hermes_lark_streaming/
 
 # Run tests (local run.py first, CI auto-downloads from GitHub)
-$HERMES_PYTHON -m pytest tests/ -v
+$HERMES_PYTHON -m pytest tests/ -q
 ```
 
 ## Architecture
@@ -53,22 +53,31 @@ StreamCardController (singleton, controller.py)
   ├─ CardSession per message (state machine: IDLE→CREATING→STREAMING→COMPLETED/FAILED/ABORTED)
   │   └─ stream segments: CardSession.segment_state (SegmentState)
   ├─ _interrupt_map — old_message_id → new_message_id mapping for interrupt redirect
-  ├─ FlushController (flush.py) — throttles CardKit updates (100ms)
-  ├─ ToolUseTracker (tooluse.py) — tracks tool call lifecycle with icon/status mapping
-  ├─ UnavailableGuard — auto-terminates on message delete/recall
-  └─ ImageResolver (image.py) — async download + re-upload markdown images as Feishu img_key
+  ├─ FlushController (streaming/flush.py) — throttles CardKit updates (100ms)
+  ├─ ToolUseTracker (streaming/tooluse.py) — tracks tool call lifecycle with icon/status mapping
+  ├─ UnavailableGuard (streaming/unavailable_guard.py) — auto-terminates on message delete/recall
+  └─ ImageResolver (streaming/image.py) — async download + re-upload markdown images as Feishu img_key
 
-Streaming card segment flow (controller_mixin.py + segments.py)
-  ├─ SegmentState — flat segment list (reasoning / answer / tool), same-type appends, cross-type creates new
-  ├─ _do_flush — 3-step pipeline: batch add elements → stream text → batch update tool panels
-  └─ _do_complete_card — close streaming + full card rebuild (retry + streaming_closed idempotency)
+Streaming card runtime (streaming/)
+  ├─ controller.py — StreamingController: create card, flush, split/rollover, and cron delivery orchestration
+  ├─ session.py — CardSession per message (state machine: IDLE→CREATING→STREAMING→COMPLETED/FAILED/ABORTED)
+  ├─ segments.py — SegmentState: flat segment list (reasoning / answer / tool), same-type appends, cross-type creates new
+  ├─ segment_helper.py — CardKit action builders, element estimates, and tool split point selection
+  ├─ text.py — reasoning tag parsing and final answer text cleanup
+  ├─ flush.py — FlushController: throttles CardKit updates (100ms)
+  ├─ tooluse.py — ToolUseTracker: tool call lifecycle tracking with icon/status mapping
+  ├─ image.py — ImageResolver: async download + re-upload markdown images as Feishu img_key
+  └─ unavailable_guard.py — UnavailableGuard: auto-terminates on message delete/recall
 
 FeishuClient (feishu.py) — lark-oapi SDK wrapper
   ├─ CardKit streaming API — update single elements at 100ms intervals
 
-Card templates (cardkit.py) — builds Feishu card JSON
-  ├─ build_streaming_card_v2 — initial streaming CardKit v2 card
-  └─ build_complete_card — final card, renders segments in order
+Card templates (cardkit/)
+  ├─ builder.py — builds Feishu card JSON
+  │   ├─ build_streaming_card_v2 — initial streaming CardKit v2 card
+  │   └─ build_complete_card — final card, renders segments in order
+  ├─ markdown.py — CardKit markdown normalization and table/image helpers
+  └─ i18n.py — localized CardKit labels
 ```
 
 ## Key Constraints

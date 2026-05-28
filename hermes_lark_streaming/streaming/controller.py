@@ -7,22 +7,12 @@ import logging
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
-from .cardkit import (
-    _LOADING_ELEMENT_ID,
-    _build_reasoning_panel,
-    _build_tool_panel,
-    _format_elapsed,
-    _streaming_element,
-    build_complete_card,
-    build_cron_card,
-    build_streaming_card_v2,
-)
-from .cardkit_i18n import _T, _i18n
-from .cardkit_md import (
+from ..cardkit.builder import build_complete_card, build_cron_card, build_streaming_card_v2
+from ..cardkit.markdown import (
     _downgrade_tables,
     optimize_markdown_style,
 )
-from .feishu import (
+from ..feishu import (
     CARDKIT_CONTENT_FAILED,
     CARDKIT_ELEMENT_LIMIT,
     CARDKIT_RATE_LIMITED,
@@ -31,55 +21,47 @@ from .feishu import (
 )
 from .flush import CARDKIT_MS
 from .image import ImageResolver
+from .segment_helper import (
+    ELEMENT_THRESHOLD,
+    FOOTER_RESERVE,
+    build_add_segment_action,
+    build_reasoning_finalized_action,
+    build_tool_update_action,
+    estimate_segment_elements,
+    estimate_tool_elements,
+    find_tool_split_offset,
+    tool_segment_end,
+)
 from .segments import Segment, SegmentState, SegmentType
 from .session import SessionState
 from .text import split_reasoning_text
-from .tooluse import ToolDisplayStep
 
 if TYPE_CHECKING:
-    from .config import Config
-    from .feishu import FeishuClient
+    from ..config import Config
+    from ..feishu import FeishuClient
     from .session import CardSession
+    from .tooluse import ToolDisplayStep
 
 _logger = logging.getLogger("hermes_lark_streaming")
 
-_ELEMENT_THRESHOLD = 180  # 拆卡阈值（飞书硬上限 200，预留 20 给 footer + 波动）
-_FOOTER_RESERVE = 2  # footer 元素预留（hr + markdown）
+
+async def _resolve_answer_images(
+    segments: list[Segment],
+    resolver: ImageResolver,
+    *,
+    log_prefix: str,
+) -> None:
+    """解析 answer segment 中的 markdown 图片，并原地更新文本."""
+    for seg in segments:
+        if seg.type != SegmentType.ANSWER or not seg.text:
+            continue
+        try:
+            seg.text = await resolver.resolve_await(seg.text)
+        except Exception:
+            _logger.debug("%s image resolve failed: el=%s", log_prefix, seg.el_id, exc_info=True)
 
 
-def _estimate_segment_elements(seg: Segment, all_steps: list[ToolDisplayStep]) -> int:
-    """估算单个 segment 新增的卡片元素数."""
-    if seg.type == SegmentType.REASONING:
-        return 4  # collapsible_panel + plain_text + standard_icon + markdown
-    elif seg.type == SegmentType.ANSWER:
-        return 1
-    elif seg.type == SegmentType.TOOL:
-        return _estimate_tool_elements(
-            seg.tool_offset,
-            _tool_segment_end(seg, all_steps),
-            all_steps,
-        )
-    return 0
-
-
-def _tool_segment_end(seg: Segment, all_steps: list[ToolDisplayStep]) -> int:
-    return seg.tool_end_offset if seg.tool_end_offset else len(all_steps)
-
-
-def _estimate_tool_elements(start: int, end: int, all_steps: list[ToolDisplayStep]) -> int:
-    """估算 tool panel 在 [start, end) step 区间内的元素数."""
-    steps = all_steps[start:end]
-    count = 3  # panel/header 基础元素
-    for step in steps:
-        count += 3  # title: div + standard_icon + lark_md
-        if step.get("detail"):
-            count += 2  # detail: div + plain_text
-        if step.get("result_block") or step.get("error_block"):
-            count += 2  # output: div + lark_md
-    return count
-
-
-class ControllerMixin:
+class StreamingController:
     """流式卡片专用方法 — 由 StreamCardController 继承."""
 
     _client: FeishuClient | None
@@ -186,22 +168,22 @@ class ControllerMixin:
                 continue
 
             if not seg.created:
-                estimated = _estimate_segment_elements(seg, all_steps)
+                estimated = estimate_segment_elements(seg, all_steps)
                 if (
                     seg.type == SegmentType.TOOL
-                    and session.element_count + new_el_total + estimated + _FOOTER_RESERVE > _ELEMENT_THRESHOLD
+                    and session.element_count + new_el_total + estimated + FOOTER_RESERVE > ELEMENT_THRESHOLD
                     and not session.split_disabled
                 ):
-                    split_offset = self._find_tool_split_offset(
-                        session.element_count + new_el_total,
-                        seg,
-                        all_steps,
+                    split_offset = find_tool_split_offset(
+                        base_count=session.element_count + new_el_total,
+                        seg=seg,
+                        all_steps=all_steps,
                     )
                     if split_offset is not None:
                         segment_state.split_tool_segment(i, split_offset)
-                        estimated = _estimate_segment_elements(seg, all_steps)
+                        estimated = estimate_segment_elements(seg, all_steps)
                 if (
-                    session.element_count + new_el_total + estimated + _FOOTER_RESERVE > _ELEMENT_THRESHOLD
+                    session.element_count + new_el_total + estimated + FOOTER_RESERVE > ELEMENT_THRESHOLD
                     and session.element_count + new_el_total > 1
                     and not session.split_disabled
                 ):
@@ -216,32 +198,12 @@ class ControllerMixin:
                     updated_tool_segs = []
                     new_el_total = 0
 
-                if seg.type == SegmentType.REASONING:
-                    el = _build_reasoning_panel(
-                        " ",
-                        seg.elapsed_ms,
-                        expanded=True,
-                        element_id=seg.el_id,
-                        text_element_id=seg.text_el_id,
-                    )
-                elif seg.type == SegmentType.ANSWER:
-                    el = _streaming_element(element_id=seg.el_id)
-                elif seg.type == SegmentType.TOOL:
-                    start = seg.tool_offset
-                    end = seg.tool_end_offset if seg.tool_end_offset else len(all_steps)
-                    el = _build_tool_panel(all_steps[start:end], element_id=seg.el_id)
+                if seg.type == SegmentType.TOOL:
                     updated_tool_segs.append(seg)
                 new_el_ids.add(seg.el_id)
                 new_el_estimates[seg.el_id] = estimated
                 new_el_total += estimated
-                actions.append({
-                    "action": "add_elements",
-                    "params": {
-                        "type": "insert_before",
-                        "target_element_id": _LOADING_ELEMENT_ID,
-                        "elements": [el],
-                    },
-                })
+                actions.append(build_add_segment_action(seg, all_steps))
                 if (
                     seg.type == SegmentType.TOOL
                     and i + 1 < len(segments)
@@ -267,26 +229,7 @@ class ControllerMixin:
                     seg.elapsed_ms,
                     session.sequence + 1,
                 )
-                d = _format_elapsed(seg.elapsed_ms)
-                en_label = _T["thought_for"][0].format(d)
-                zh_label = _T["thought_for"][1].format(d)
-                actions.append({
-                    "action": "partial_update_element",
-                    "params": {
-                        "element_id": seg.el_id,
-                        "partial_element": {
-                            "header": {
-                                "title": {
-                                    "tag": "plain_text",
-                                    "content": f"💭 {en_label}",
-                                    "i18n_content": _i18n(f"💭 {en_label}", f"💭 {zh_label}"),
-                                    "text_color": "grey",
-                                    "text_size": "notation",
-                                },
-                            },
-                        },
-                    },
-                })
+                actions.append(build_reasoning_finalized_action(seg))
             elif seg.type == SegmentType.TOOL and seg.dirty:
                 if seg.tool_end_offset > 0:
                     start, end = seg.tool_offset, seg.tool_end_offset
@@ -312,18 +255,10 @@ class ControllerMixin:
                     updated_tool_segs = []
                     new_el_total = 0
                     continue
-                estimate = _estimate_tool_elements(start, end, all_steps)
-                panel = _build_tool_panel(all_steps[start:end])
-                actions.append({
-                    "action": "partial_update_element",
-                    "params": {
-                        "element_id": seg.el_id,
-                        "partial_element": {
-                            "elements": panel["elements"],
-                            "header": panel["header"],
-                        },
-                    },
-                })
+                estimate = estimate_tool_elements(start, end, all_steps)
+                actions.append(
+                    build_tool_update_action(element_id=seg.el_id, steps=all_steps[start:end])
+                )
                 updated_tool_segs.append(seg)
                 new_el_estimates[seg.el_id] = estimate
 
@@ -435,23 +370,6 @@ class ControllerMixin:
             return False
         return True
 
-    def _find_tool_split_offset(
-        self,
-        base_count: int,
-        seg: Segment,
-        all_steps: list[ToolDisplayStep],
-    ) -> int | None:
-        """寻找 tool step 拆分点，让当前卡保留尽可能多的 steps."""
-        start = seg.tool_offset
-        end = _tool_segment_end(seg, all_steps)
-        if end - start <= 1:
-            return None
-        for split_offset in range(end - 1, start, -1):
-            estimate = _estimate_tool_elements(start, split_offset, all_steps)
-            if base_count + estimate + _FOOTER_RESERVE <= _ELEMENT_THRESHOLD:
-                return split_offset
-        return None
-
     async def _maybe_rollover_tool_segment(
         self,
         *,
@@ -467,36 +385,31 @@ class ControllerMixin:
     ) -> str | None:
         """按 tool step 边界拆分过大的 dirty tool segment."""
         start = seg.tool_offset
-        end = _tool_segment_end(seg, all_steps)
-        estimate = _estimate_tool_elements(start, end, all_steps)
+        end = tool_segment_end(seg, all_steps)
+        estimate = estimate_tool_elements(start, end, all_steps)
         delta = estimate - seg.element_estimate
         if (
             delta <= 0
-            or session.element_count + delta + _FOOTER_RESERVE <= _ELEMENT_THRESHOLD
+            or session.element_count + delta + FOOTER_RESERVE <= ELEMENT_THRESHOLD
             or session.split_disabled
         ):
             return None
 
-        split_offset = self._find_tool_split_offset(
-            session.element_count - seg.element_estimate,
-            seg,
-            all_steps,
+        split_offset = find_tool_split_offset(
+            base_count=session.element_count - seg.element_estimate,
+            seg=seg,
+            all_steps=all_steps,
         )
         if split_offset is None:
             return None
 
-        old_estimate = _estimate_tool_elements(seg.tool_offset, split_offset, all_steps)
-        panel = _build_tool_panel(all_steps[seg.tool_offset:split_offset])
-        actions.append({
-            "action": "partial_update_element",
-            "params": {
-                "element_id": seg.el_id,
-                "partial_element": {
-                    "elements": panel["elements"],
-                    "header": panel["header"],
-                },
-            },
-        })
+        old_estimate = estimate_tool_elements(seg.tool_offset, split_offset, all_steps)
+        actions.append(
+            build_tool_update_action(
+                element_id=seg.el_id,
+                steps=all_steps[seg.tool_offset:split_offset],
+            )
+        )
         updated_tool_segs.append(seg)
         new_el_estimates[seg.el_id] = old_estimate
         segment_state.split_tool_segment(index, split_offset)
@@ -532,12 +445,11 @@ class ControllerMixin:
 
         seal_segments = [s for s in segments[:split_idx] if s.created]
         if session.image_resolver:
-            for seg in seal_segments:
-                if seg.type == SegmentType.ANSWER and seg.text:
-                    try:
-                        seg.text = await session.image_resolver.resolve_await(seg.text)
-                    except Exception:
-                        _logger.debug("CardKit seal image resolve failed: el=%s", seg.el_id, exc_info=True)
+            await _resolve_answer_images(
+                seal_segments,
+                session.image_resolver,
+                log_prefix="CardKit seal",
+            )
 
         seal_card = build_complete_card(
             segments=seal_segments,
@@ -625,12 +537,11 @@ class ControllerMixin:
         active_segments = session.active_segments()
 
         if session.image_resolver:
-            for seg in active_segments:
-                if seg.type == SegmentType.ANSWER and seg.text:
-                    try:
-                        seg.text = await session.image_resolver.resolve_await(seg.text)
-                    except Exception:
-                        _logger.debug("CardKit image resolve failed: el=%s", seg.el_id, exc_info=True)
+            await _resolve_answer_images(
+                active_segments,
+                session.image_resolver,
+                log_prefix="CardKit",
+            )
 
         card = build_complete_card(
             segments=active_segments,
