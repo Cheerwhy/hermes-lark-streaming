@@ -25,6 +25,7 @@
 - **图片解析** — 自动识别 markdown 图片引用，下载上传后替换为飞书 img_key
 - **中断处理** — 处理 `/stop` 命令和消息打断，展示中断状态卡片并自动开启新会话
 - **Cron 卡片推送** — 定时任务结果以飞书卡片形式推送，保留 Markdown 渲染
+- **后台任务卡片推送** — `/background` 任务完成后以卡片形式推送，支持话题内回复
 - **多语言** — 卡片文本（状态、工具面板、思考标签等）内置中英双语，根据飞书客户端语言自动切换
 
 ---
@@ -196,6 +197,7 @@ $HERMES_PYTHON -m pip uninstall hermes-lark-streaming
 | `on_message_interrupted` | `_run_agent` 递归调用前 | 处理消息打断，终止旧卡片并创建新会话 |
 | `on_message_completed_wait` | `return response` 之前 | 等待卡片创建/收尾完成后发送终态卡片，失败时让网关走文本兜底 |
 | `on_cron_deliver` | `_deliver_result` 中 `delivered = False` 之后 | 拦截飞书 Cron 推送，以卡片形式发送 |
+| `on_background_deliver` | `_run_background_task` 中 `extract_images` 之后 | 拦截飞书后台任务推送，以卡片形式回复到原始消息（话题内正确定位） |
 
 **消息处理流程：**
 
