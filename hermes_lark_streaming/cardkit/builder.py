@@ -502,3 +502,23 @@ def build_cron_card(content: str) -> dict[str, Any]:
         if chunk.strip():
             card["body"]["elements"].append({"tag": "markdown", "content": chunk})
     return card
+
+
+def build_background_card(preview: str, content: str) -> dict[str, Any]:
+    """Background 任务完成推送卡片 — schema 2.0，header + markdown."""
+    card: dict[str, Any] = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True, "locales": _LOCALES},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"✅ Background: \"{preview}\""},
+        },
+        "body": {"elements": []},
+    }
+    body = content if content.strip() else "(No response generated)"
+    summary = body[:120].replace("\n", " ").replace("```", "").strip()
+    if summary:
+        card["config"]["summary"] = {"content": summary}
+    for chunk in _split_long_text(optimize_markdown_style(body)):
+        if chunk.strip():
+            card["body"]["elements"].append({"tag": "markdown", "content": chunk})
+    return card

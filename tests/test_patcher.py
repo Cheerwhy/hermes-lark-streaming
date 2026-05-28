@@ -175,6 +175,11 @@ class TestApplyRemove:
         assert "on_answer_delta(message_id=event_message_id" in content
         assert "on_thinking_delta(message_id=event_message_id" in content
         assert "on_reasoning_delta(message_id=event_message_id" in content
+        assert "on_background_deliver(" in content
+        assert "_bg_preview = prompt[:60] + ('...' if len(prompt) > 60 else '')" in content
+        assert "content=text_content" in content
+        assert "reply_to_message_id=event_message_id" in content
+        assert "if not images and not media_files:" in content
 
     def test_apply_idempotent(self, run_copy: Path) -> None:
         patcher = _patcher(run_copy)

@@ -231,3 +231,26 @@ def on_cron_deliver(
     except Exception as exc:
         _logger.warning("on_cron_deliver error: %s", exc, exc_info=True)
         return False
+
+
+async def on_background_deliver(
+    *,
+    chat_id: str,
+    preview: str,
+    content: str,
+    reply_to_message_id: str | None = None,
+) -> bool:
+    """[注入点 11] background 任务完成推送 — 包装为飞书卡片发送."""
+    try:
+        ctrl = get_controller()
+        if not ctrl.enabled:
+            return False
+        return await ctrl.on_background_deliver(
+            chat_id=chat_id,
+            preview=preview,
+            content=content,
+            reply_to_message_id=reply_to_message_id,
+        )
+    except Exception as exc:
+        _logger.warning("on_background_deliver error: %s", exc, exc_info=True)
+        return False

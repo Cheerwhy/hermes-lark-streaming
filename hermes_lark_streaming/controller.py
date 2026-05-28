@@ -386,6 +386,30 @@ class StreamCardController(StreamingController):
             _logger.warning("cron card delivery failed", exc_info=True)
             return False
 
+    async def on_background_deliver(
+        self,
+        *,
+        chat_id: str,
+        preview: str,
+        content: str,
+        reply_to_message_id: str | None = None,
+    ) -> bool:
+        """Background 任务完成推送 — 包装为静态卡片发送，成功返回 True."""
+        if not self.enabled or not content or not chat_id:
+            return False
+        try:
+            await self._do_background_deliver(
+                chat_id,
+                preview,
+                content,
+                reply_to_message_id=reply_to_message_id,
+            )
+            _logger.info("background card delivered: chat=%s len=%d", chat_id[:12], len(content))
+            return True
+        except Exception:
+            _logger.warning("background card delivery failed", exc_info=True)
+            return False
+
     def defer_background_review(
         self,
         *,
