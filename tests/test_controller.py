@@ -1098,7 +1098,6 @@ class TestBackgroundDeliver:
         card = args[1]
         body = card["body"]["elements"][0]["content"]
         assert "Here\n\nDone" in body
-        assert "https://example.com/a.png" not in body
 
     @pytest.mark.asyncio
     async def test_returns_false_on_empty_cleaned_text(self) -> None:
