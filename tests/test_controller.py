@@ -58,6 +58,20 @@ def test_on_message_started_registers_anchor_alias_and_cleanup() -> None:
     assert "quoted" not in ctrl._sessions
 
 
+def test_consume_text_fallback_clears_anchor_alias() -> None:
+    ctrl = StreamCardController()
+    session = _make_session("msg")
+    session.anchor_id = "quoted"
+    ctrl._sessions["msg"] = session
+    ctrl._sessions["quoted"] = session
+    ctrl._text_fallback_needed.update({"msg", "quoted"})
+
+    assert ctrl.consume_text_fallback("quoted") is True
+
+    assert "msg" not in ctrl._text_fallback_needed
+    assert "quoted" not in ctrl._text_fallback_needed
+
+
 def test_on_interrupted_uses_new_message_id_and_anchor_alias() -> None:
     ctrl = StreamCardController()
     _enable(ctrl)

@@ -31,7 +31,10 @@ def _client_with(**methods: AsyncMock) -> FeishuClient:
         ),
         im=SimpleNamespace(
             v1=SimpleNamespace(
-                message=SimpleNamespace(areply=methods.get("reply", AsyncMock())),
+                message=SimpleNamespace(
+                    acreate=methods.get("create_message", AsyncMock()),
+                    areply=methods.get("reply", AsyncMock()),
+                ),
             ),
         ),
     )
@@ -64,6 +67,46 @@ async def test_reply_card_by_id_retries_gateway_timeout_once() -> None:
 
     assert await client.reply_card_by_id("anchor", "card") == "msg-ok"
     assert reply.await_count == 2
+    first_request = reply.await_args_list[0].args[0]
+    second_request = reply.await_args_list[1].args[0]
+    assert first_request.request_body.uuid
+    assert second_request.request_body.uuid == first_request.request_body.uuid
+
+
+@pytest.mark.asyncio
+async def test_send_card_to_chat_reuses_uuid_across_retries() -> None:
+    create = AsyncMock(
+        side_effect=[
+            _Resp(ok=False, code=2200, msg="Gateway timeout. Please try again later."),
+            _Resp(ok=True, data=SimpleNamespace(message_id="msg-ok")),
+        ]
+    )
+    client = _client_with(create_message=create)
+
+    assert await client.send_card_to_chat("chat", {"schema": "2.0"}) == "msg-ok"
+    assert create.await_count == 2
+    first_request = create.await_args_list[0].args[0]
+    second_request = create.await_args_list[1].args[0]
+    assert first_request.request_body.uuid
+    assert second_request.request_body.uuid == first_request.request_body.uuid
+
+
+@pytest.mark.asyncio
+async def test_send_card_reply_reuses_uuid_across_retries() -> None:
+    reply = AsyncMock(
+        side_effect=[
+            _Resp(ok=False, code=2200, msg="Gateway timeout. Please try again later."),
+            _Resp(ok=True, data=SimpleNamespace(message_id="msg-ok")),
+        ]
+    )
+    client = _client_with(reply=reply)
+
+    assert await client.send_card_to_chat("chat", {"schema": "2.0"}, reply_to_message_id="anchor") == "msg-ok"
+    assert reply.await_count == 2
+    first_request = reply.await_args_list[0].args[0]
+    second_request = reply.await_args_list[1].args[0]
+    assert first_request.request_body.uuid
+    assert second_request.request_body.uuid == first_request.request_body.uuid
 
 
 @pytest.mark.asyncio

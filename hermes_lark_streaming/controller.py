@@ -145,7 +145,12 @@ class StreamCardController(StreamingController):
         """Return whether gateway should undo already_sent and deliver plain text."""
         if message_id not in self._text_fallback_needed:
             return False
+        session = self._sessions.get(message_id)
         self._text_fallback_needed.discard(message_id)
+        if session is not None:
+            self._text_fallback_needed.discard(session.message_id)
+            if session.anchor_id:
+                self._text_fallback_needed.discard(session.anchor_id)
         return True
 
     def on_thinking(self, *, message_id: str, text: str) -> bool:

@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import URLError
@@ -147,6 +148,7 @@ class FeishuClient:
         reply_to_message_id: str | None = None,
     ) -> str:
         """发送独立卡片到聊天（非回复），返回 message_id."""
+        request_uuid = uuid.uuid4().hex
         if reply_to_message_id:
             request = (
                 ReplyMessageRequest.builder()
@@ -155,6 +157,7 @@ class FeishuClient:
                     ReplyMessageRequestBody.builder()
                     .msg_type("interactive")
                     .content(self._dumps(card))
+                    .uuid(request_uuid)
                     .build()
                 )
                 .build()
@@ -172,6 +175,7 @@ class FeishuClient:
                     .receive_id(chat_id)
                     .msg_type("interactive")
                     .content(self._dumps(card))
+                    .uuid(request_uuid)
                     .build()
                 )
                 .build()
@@ -186,6 +190,7 @@ class FeishuClient:
 
     async def reply_card_by_id(self, message_id: str, card_id: str) -> str:
         """通过 card_id 回复 CardKit 卡片消息，返回 message_id."""
+        request_uuid = uuid.uuid4().hex
         request = (
             ReplyMessageRequest.builder()
             .message_id(message_id)
@@ -193,6 +198,7 @@ class FeishuClient:
                 ReplyMessageRequestBody.builder()
                 .msg_type("interactive")
                 .content(self._dumps({"type": "card", "data": {"card_id": card_id}}))
+                .uuid(request_uuid)
                 .build()
             )
             .build()
