@@ -111,21 +111,41 @@ class FeishuClient:
     def _dumps(obj: Any) -> str:
         return json.dumps(obj, ensure_ascii=False)
 
-    async def send_card_to_chat(self, chat_id: str, card: dict[str, Any]) -> str:
+    async def send_card_to_chat(
+        self,
+        chat_id: str,
+        card: dict[str, Any],
+        *,
+        reply_to_message_id: str | None = None,
+    ) -> str:
         """发送独立卡片到聊天（非回复），返回 message_id."""
-        request = (
-            CreateMessageRequest.builder()
-            .receive_id_type("chat_id")
-            .request_body(
-                CreateMessageRequestBody.builder()
-                .receive_id(chat_id)
-                .msg_type("interactive")
-                .content(self._dumps(card))
+        if reply_to_message_id:
+            request = (
+                ReplyMessageRequest.builder()
+                .message_id(reply_to_message_id)
+                .request_body(
+                    ReplyMessageRequestBody.builder()
+                    .msg_type("interactive")
+                    .content(self._dumps(card))
+                    .build()
+                )
                 .build()
             )
-            .build()
-        )
-        resp = await self._client.im.v1.message.acreate(request)
+            resp = await self._client.im.v1.message.areply(request)
+        else:
+            request = (
+                CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(chat_id)
+                    .msg_type("interactive")
+                    .content(self._dumps(card))
+                    .build()
+                )
+                .build()
+            )
+            resp = await self._client.im.v1.message.acreate(request)
         self._check(resp, "send_card_to_chat")
         if resp.data and resp.data.message_id:
             return str(resp.data.message_id)

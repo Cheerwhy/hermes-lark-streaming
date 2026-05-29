@@ -7,7 +7,7 @@ import logging
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
-from ..cardkit.builder import build_complete_card, build_cron_card, build_streaming_card_v2
+from ..cardkit.builder import build_background_card, build_complete_card, build_cron_card, build_streaming_card_v2
 from ..cardkit.markdown import (
     _downgrade_tables,
     optimize_markdown_style,
@@ -616,3 +616,20 @@ class StreamingController:
         assert self._client is not None
         card = build_cron_card(content)
         await self._client.send_card_to_chat(chat_id, card)
+
+    async def _do_background_deliver(
+        self,
+        chat_id: str,
+        preview: str,
+        content: str,
+        *,
+        reply_to_message_id: str | None = None,
+    ) -> None:
+        await self._ensure_init()
+        assert self._client is not None
+        card = build_background_card(preview, content)
+        await self._client.send_card_to_chat(
+            chat_id,
+            card,
+            reply_to_message_id=reply_to_message_id,
+        )

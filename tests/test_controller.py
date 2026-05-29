@@ -1068,3 +1068,54 @@ class TestCronDeliver:
             assert result is False
         finally:
             loop.call_soon_threadsafe(loop.stop)
+
+
+class TestBackgroundDeliver:
+    @pytest.mark.asyncio
+    async def test_sends_cleaned_text_card(self) -> None:
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_123"
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        result = await ctrl.on_background_deliver(
+            chat_id="c1",
+            preview="prompt",
+            content="Here\n\nDone",
+            reply_to_message_id="om_1",
+        )
+
+        assert result is True
+        mock_client.upload_image.assert_not_called()
+        mock_client.send_card_to_chat.assert_awaited_once()
+        args, kwargs = mock_client.send_card_to_chat.call_args
+        assert args[0] == "c1"
+        assert kwargs["reply_to_message_id"] == "om_1"
+        card = args[1]
+        body = card["body"]["elements"][0]["content"]
+        assert "Here\n\nDone" in body
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_empty_cleaned_text(self) -> None:
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_123"
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        result = await ctrl.on_background_deliver(
+            chat_id="c1",
+            preview="prompt",
+            content="",
+        )
+
+        assert result is False
+        mock_client.upload_image.assert_not_called()
+        mock_client.send_card_to_chat.assert_not_called()

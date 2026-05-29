@@ -43,7 +43,8 @@ gateway/run.py (Hermes)
        ├─ on_background_review_message → controller.defer_background_review()
        ├─ on_message_interrupted → controller.on_interrupted()
        ├─ on_message_completed_wait → controller.on_completed_wait()
-       └─ on_message_aborted    → controller.on_aborted()
+       ├─ on_message_aborted    → controller.on_aborted()
+       └─ on_background_deliver → controller.on_background_deliver()
 
 cron/scheduler.py (Hermes)
   └─ CronPatcher (patcher.py) injects on_cron_deliver into _deliver_result
@@ -75,7 +76,9 @@ FeishuClient (feishu.py) — lark-oapi SDK wrapper
 Card templates (cardkit/)
   ├─ builder.py — builds Feishu card JSON
   │   ├─ build_streaming_card_v2 — initial streaming CardKit v2 card
-  │   └─ build_complete_card — final card, renders segments in order
+  │   ├─ build_complete_card — final card, renders segments in order
+  │   ├─ build_cron_card — static card for cron delivery
+  │   └─ build_background_card — static card for background task delivery
   ├─ markdown.py — CardKit markdown normalization and table/image helpers
   └─ i18n.py — localized CardKit labels
 ```
@@ -91,4 +94,5 @@ Card templates (cardkit/)
 - Reasoning display depends on upstream providing `<thinking>`/`<thought>`/`<antthinking>` tags or `Reasoning:\n` prefix in text. Native API reasoning blocks (Anthropic extended thinking, DeepSeek reasoning_content) are available via `on_reasoning_delta` hook when `display.platforms.feishu.show_reasoning` is enabled.
 - CardKit v2.0 elements (collapsible_panel, streaming_mode) only work with `"schema": "2.0"` cards.
 - Streaming cards use a single CardKit card for the message lifecycle: elements are dynamically created in event arrival order. When CardKit creation fails, the plugin yields to the Hermes Gateway default reply.
+- The background deliver hook (`on_background_deliver`) is injected in `_run_background_task` after `adapter.extract_images(response)`. It uses `ReplyMessage` API with `event_message_id` as anchor, so cards land in the correct topic. On success, `text_content` is cleared to avoid duplicate text delivery, while images and media files continue through the original Hermes loops. On failure, the original Hermes delivery logic runs as fallback.
 - Commit messages: body should use bullet list format (unnumbered `- item`).

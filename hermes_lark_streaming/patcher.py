@@ -24,6 +24,7 @@ _HOOK_NAMES = [
     "BACKGROUND_REVIEW",
     "ABORT",
     "INTERRUPT",
+    "BG_DELIVER",
 ]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
@@ -37,6 +38,7 @@ MK_REASONING, MK_REASONING_END = MARKERS[6]
 MK_BACKGROUND_REVIEW, MK_BACKGROUND_REVIEW_END = MARKERS[7]
 MK_ABORT, MK_ABORT_END = MARKERS[8]
 MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[9]
+MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[10]
 
 _BACKUP_SUFFIX = ".hermes_lark.bak"
 
@@ -277,6 +279,31 @@ def _cron_deliver_hook(indent: str) -> str:
     )
 
 
+def _bg_deliver_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_BG_DELIVER,
+        MK_BG_DELIVER_END,
+        [
+            "try:",
+            "    if source.platform.value.lower() in ('feishu', 'lark') and response:",
+            "        from hermes_lark_streaming.patch import on_background_deliver",
+            "        _bg_preview = prompt[:60] + ('...' if len(prompt) > 60 else '')",
+            "        if await on_background_deliver(",
+            "            chat_id=source.chat_id,",
+            "            preview=_bg_preview,",
+            "            content=text_content,",
+            "            reply_to_message_id=event_message_id,",
+            "        ):",
+            "            text_content = ''",
+            "            if not images and not media_files:",
+            "                return",
+            "except Exception:",
+            "    pass",
+        ],
+    )
+
+
 def _remove_block(content: str, begin: str, end: str) -> str:
     lines = content.splitlines(keepends=True)
     begin_idx = end_idx = None
@@ -364,6 +391,11 @@ class Patcher:
                 "Cannot find background_review_callback anchor in run.py — Hermes version may be incompatible"
             )
 
+        if "images, text_content = adapter.extract_images(response)" not in content:
+            raise PatcherError(
+                "Cannot find background deliver anchor in run.py — Hermes version may be incompatible"
+            )
+
         normalize_site = _find_handle_message_source_site(tree, content.splitlines(keepends=True))
         if normalize_site is None:
             raise PatcherError(
@@ -418,6 +450,7 @@ class Patcher:
             ("thinking", "thinking", _find_func_body(tree, lines, "_interim_assistant_cb")),
             ("reasoning", "reasoning", _find_reasoning_site(tree, lines)),
             ("background_review", "background_review", _find_background_review_site(tree, lines)),
+            ("bg_deliver", "bg_deliver", _find_bg_deliver_site(tree, lines)),
         ]
 
         sites: list[tuple[int, str, str]] = []
@@ -439,6 +472,7 @@ class Patcher:
             "thinking": _thinking_hook,
             "reasoning": _reasoning_hook,
             "background_review": _background_review_hook,
+            "bg_deliver": _bg_deliver_hook,
         }
         for idx, indent, fn_name in sites:
             hook = _HOOK_FNS[fn_name](indent)
@@ -539,6 +573,13 @@ def _find_reasoning_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] 
 def _find_background_review_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
     for i, line in enumerate(lines):
         if line.strip() == "agent.background_review_callback = _bg_review_send":
+            return i + 1, _safe_indent(lines, i)
+    return None
+
+
+def _find_bg_deliver_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    for i, line in enumerate(lines):
+        if line.strip() == "images, text_content = adapter.extract_images(response)":
             return i + 1, _safe_indent(lines, i)
     return None
 

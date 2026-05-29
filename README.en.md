@@ -25,6 +25,7 @@ Inspired by [openclaw-lark](https://github.com/larksuite/openclaw-lark) and [her
 - **Image resolution** — Detects markdown image references, downloads and re-uploads as Feishu img_key
 - **Abort handling** — Gracefully handles `/stop` command and message interrupts with aborted state card and automatic new session
 - **Cron card delivery** — Delivers scheduled job results as Feishu cards, preserving Markdown rendering
+- **Background task card delivery** — Delivers `/background` task results as cards, with topic-aware reply
 - **i18n** — Built-in Chinese/English bilingual card text (status, tool panel, thinking labels, etc.) that auto-switches based on Feishu client language
 
 ---
@@ -196,6 +197,7 @@ The plugin injects hook calls into `gateway/run.py` and `cron/scheduler.py` via 
 | `on_message_interrupted` | Before recursive `_run_agent` call | Handles message interrupts, terminates old card and creates new session |
 | `on_message_completed_wait` | Before `return response` | Waits for card creation/finalization before sending the completion card; yields to gateway text fallback on failure |
 | `on_cron_deliver` | After `delivered = False` in `_deliver_result` | Intercepts Feishu cron delivery, sends as card |
+| `on_background_deliver` | After `extract_images` in `_run_background_task` | Intercepts Feishu background task delivery, replies as card with topic-aware positioning |
 
 **Message flow:**
 
