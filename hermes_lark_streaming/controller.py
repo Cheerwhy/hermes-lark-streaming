@@ -36,6 +36,7 @@ class StreamCardController(StreamingController):
         self._session_ttl = self._cfg.card_duration_sec
         self._loop: asyncio.AbstractEventLoop | None = None
         self._text_fallback_needed: set[str] = set()
+        self._text_fallback_aliases: dict[str, set[str]] = {}
 
     @property
     def enabled(self) -> bool:
@@ -137,20 +138,21 @@ class StreamCardController(StreamingController):
         session.create_task = self._fire_and_forget(self._do_create_card(session), loop)
 
     def _mark_text_fallback_needed(self, session: CardSession) -> None:
-        self._text_fallback_needed.add(session.message_id)
+        keys = {session.message_id}
         if session.anchor_id:
-            self._text_fallback_needed.add(session.anchor_id)
+            keys.add(session.anchor_id)
+        self._text_fallback_needed.update(keys)
+        for key in keys:
+            self._text_fallback_aliases[key] = set(keys)
 
     def consume_text_fallback(self, message_id: str) -> bool:
         """Return whether gateway should undo already_sent and deliver plain text."""
         if message_id not in self._text_fallback_needed:
             return False
-        session = self._sessions.get(message_id)
-        self._text_fallback_needed.discard(message_id)
-        if session is not None:
-            self._text_fallback_needed.discard(session.message_id)
-            if session.anchor_id:
-                self._text_fallback_needed.discard(session.anchor_id)
+        keys = self._text_fallback_aliases.pop(message_id, {message_id})
+        for key in keys:
+            self._text_fallback_needed.discard(key)
+            self._text_fallback_aliases.pop(key, None)
         return True
 
     def on_thinking(self, *, message_id: str, text: str) -> bool:

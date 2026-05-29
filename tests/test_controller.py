@@ -64,12 +64,14 @@ def test_consume_text_fallback_clears_anchor_alias() -> None:
     session.anchor_id = "quoted"
     ctrl._sessions["msg"] = session
     ctrl._sessions["quoted"] = session
-    ctrl._text_fallback_needed.update({"msg", "quoted"})
+    ctrl._mark_text_fallback_needed(session)
+    ctrl._cleanup("msg")
 
-    assert ctrl.consume_text_fallback("quoted") is True
+    assert ctrl.consume_text_fallback("msg") is True
 
     assert "msg" not in ctrl._text_fallback_needed
     assert "quoted" not in ctrl._text_fallback_needed
+    assert ctrl._text_fallback_aliases == {}
 
 
 def test_on_interrupted_uses_new_message_id_and_anchor_alias() -> None:
