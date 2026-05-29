@@ -101,7 +101,7 @@ def _complete_hook(indent: str) -> str:
         MK_COMPLETE_END,
         [
             "try:",
-            "    from hermes_lark_streaming.patch import on_message_completed_wait",
+            "    from hermes_lark_streaming.patch import on_message_completed_wait, on_message_needs_text_fallback",
             "    _lark_card_sent = await on_message_completed_wait(",
             "        message_id=event.message_id,",
             "        answer=response,",
@@ -118,6 +118,8 @@ def _complete_hook(indent: str) -> str:
             "    )",
             "    if _lark_card_sent:",
             "        agent_result['already_sent'] = True",
+            "    elif on_message_needs_text_fallback(message_id=event.message_id):",
+            "        agent_result.pop('already_sent', None)",
             "except Exception:",
             "    pass",
         ],

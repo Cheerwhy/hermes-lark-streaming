@@ -37,6 +37,9 @@ from lark_oapi.api.im.v1 import (
 
 _logger = logging.getLogger("hermes_lark_streaming")
 
+CARDKIT_GATEWAY_TIMEOUT = 2200
+_TRANSIENT_RETRY_DELAYS_SEC = (0.15, 0.5)
+
 
 def _sanitize_message(msg: str) -> str:
     """从错误消息中移除 token 和 secret."""
@@ -111,6 +114,31 @@ class FeishuClient:
     def _dumps(obj: Any) -> str:
         return json.dumps(obj, ensure_ascii=False)
 
+    async def _checked_call(self, operation: str, call: Any) -> Any:
+        """Run a Feishu SDK call and retry transient gateway timeouts."""
+        attempts = len(_TRANSIENT_RETRY_DELAYS_SEC) + 1
+        last_error: FeishuAPIError | None = None
+        for attempt in range(attempts):
+            resp = await call()
+            try:
+                self._check(resp, operation)
+                return resp
+            except FeishuAPIError as exc:
+                last_error = exc
+                if exc.code != CARDKIT_GATEWAY_TIMEOUT or attempt >= attempts - 1:
+                    raise
+                delay = _TRANSIENT_RETRY_DELAYS_SEC[attempt]
+                _logger.warning(
+                    "%s transient gateway timeout, retrying attempt=%d/%d delay=%.2fs",
+                    operation,
+                    attempt + 2,
+                    attempts,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+        assert last_error is not None
+        raise last_error
+
     async def send_card_to_chat(
         self,
         chat_id: str,
@@ -131,7 +159,10 @@ class FeishuClient:
                 )
                 .build()
             )
-            resp = await self._client.im.v1.message.areply(request)
+            resp = await self._checked_call(
+                "send_card_to_chat",
+                lambda: self._client.im.v1.message.areply(request),
+            )
         else:
             request = (
                 CreateMessageRequest.builder()
@@ -145,8 +176,10 @@ class FeishuClient:
                 )
                 .build()
             )
-            resp = await self._client.im.v1.message.acreate(request)
-        self._check(resp, "send_card_to_chat")
+            resp = await self._checked_call(
+                "send_card_to_chat",
+                lambda: self._client.im.v1.message.acreate(request),
+            )
         if resp.data and resp.data.message_id:
             return str(resp.data.message_id)
         raise FeishuAPIError("send_card_to_chat: response missing message_id")
@@ -164,8 +197,10 @@ class FeishuClient:
             )
             .build()
         )
-        resp = await self._client.im.v1.message.areply(request)
-        self._check(resp, "reply_card_by_id")
+        resp = await self._checked_call(
+            "reply_card_by_id",
+            lambda: self._client.im.v1.message.areply(request),
+        )
         if resp.data and resp.data.message_id:
             return str(resp.data.message_id)
         raise FeishuAPIError("reply_card_by_id: response missing message_id")
@@ -177,8 +212,10 @@ class FeishuClient:
             .request_body(CreateCardRequestBody.builder().type("card_json").data(self._dumps(card)).build())
             .build()
         )
-        resp = await self._client.cardkit.v1.card.acreate(request)
-        self._check(resp, "cardkit_create")
+        resp = await self._checked_call(
+            "cardkit_create",
+            lambda: self._client.cardkit.v1.card.acreate(request),
+        )
         if resp.data and resp.data.card_id:
             return str(resp.data.card_id)
         raise FeishuAPIError("cardkit_create: response missing card_id")

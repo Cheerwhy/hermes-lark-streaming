@@ -394,6 +394,8 @@ class TestDoCreateCard:
         assert session.segment_state is not None
         assert session.state == SessionState.FAILED
         assert await ctrl.on_completed_wait(message_id="msg_fallback", answer="plain") is False
+        assert ctrl.consume_text_fallback("msg_fallback") is True
+        assert ctrl.consume_text_fallback("msg_fallback") is False
         assert "msg_fallback" not in ctrl._sessions
 
     @pytest.mark.asyncio

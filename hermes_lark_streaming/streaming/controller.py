@@ -139,6 +139,8 @@ class StreamingController:
             )
         except FeishuAPIError:
             _logger.info("CardKit create failed, yielding to gateway", exc_info=True)
+            if hasattr(self, "_mark_text_fallback_needed"):
+                self._mark_text_fallback_needed(session)
             session.mark_failed()
         except Exception:
             _logger.exception("_do_create_card failed")

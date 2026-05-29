@@ -170,7 +170,9 @@ class TestApplyRemove:
         assert "new_message_id=_lark_next_message_id" in content
         assert "anchor_id=_lark_next_anchor_id" in content
         assert "on_message_completed_wait(" in content
+        assert "on_message_needs_text_fallback" in content
         assert "_lark_card_sent = await on_message_completed_wait(" in content
+        assert "agent_result.pop('already_sent', None)" in content
         assert "message_id=event.message_id" in content
         assert "on_answer_delta(message_id=event_message_id" in content
         assert "on_thinking_delta(message_id=event_message_id" in content

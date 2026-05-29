@@ -140,6 +140,12 @@ async def on_message_completed_wait(
 
 
 @_safe_hook(default_return=False)
+def on_message_needs_text_fallback(*, ctrl: Any, message_id: str) -> bool:
+    """Return True once when CardKit failed and gateway must send plain text."""
+    return bool(ctrl.consume_text_fallback(message_id))
+
+
+@_safe_hook(default_return=False)
 def on_tool_updated(
     *,
     ctrl: Any,
