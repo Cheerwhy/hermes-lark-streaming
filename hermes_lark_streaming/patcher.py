@@ -416,7 +416,7 @@ class Patcher:
         else:
             self._backup()
         content = self._inject_all(content)
-        self.run_path.write_text(content, encoding="utf-8")
+        self._atomic_write(self.run_path, content)
 
     def remove(self) -> None:
         content = self.run_path.read_text(encoding="utf-8")
@@ -424,7 +424,7 @@ class Patcher:
             return
         for begin, end in self.MARKERS:
             content = _remove_block(content, begin, end)
-        self.run_path.write_text(content, encoding="utf-8")
+        self._atomic_write(self.run_path, content)
 
     def restore(self) -> None:
         backup = self.run_path.with_suffix(self.run_path.suffix + _BACKUP_SUFFIX)
@@ -436,6 +436,21 @@ class Patcher:
         backup = self.run_path.with_suffix(self.run_path.suffix + _BACKUP_SUFFIX)
         if not backup.exists():
             shutil.copy2(self.run_path, backup)
+
+    @staticmethod
+    def _atomic_write(path: Path, content: str) -> None:
+        """Atomic write: write to temp file then rename, preventing corruption on crash."""
+        import tempfile
+        tmp = Path(tempfile.mktemp(prefix=".hermes_lark_", dir=str(path.parent)))
+        try:
+            tmp.write_text(content, encoding="utf-8")
+            os.replace(str(tmp), str(path))
+        except BaseException:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
     def _inject_all(self, content: str) -> str:
         tree = ast.parse(content)

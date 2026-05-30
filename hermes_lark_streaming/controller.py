@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future as ConcurrentFuture
@@ -579,10 +580,12 @@ class StreamCardController(StreamingController):
 
 
 _controller: StreamCardController | None = None
+_controller_lock = threading.Lock()
 
 
 def get_controller() -> StreamCardController:
     global _controller
-    if _controller is None:
-        _controller = StreamCardController()
-    return _controller
+    with _controller_lock:
+        if _controller is None:
+            _controller = StreamCardController()
+        return _controller
