@@ -495,6 +495,8 @@ class StreamingController:
         session.sequence = 1
         session.split_disabled = False
         session.split_index = split_idx
+        for seg in segments[split_idx:]:
+            seg.created = False
         _logger.info(
             "CardKit split: msg=%s sealed=%d new_card=%s",
             session.message_id[:12],
