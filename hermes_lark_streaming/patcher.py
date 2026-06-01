@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import logging
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 _logger = logging.getLogger("hermes_lark_streaming")
@@ -321,6 +323,24 @@ def _remove_block(content: str, begin: str, end: str) -> str:
     return content
 
 
+def _atomic_write(path: Path, content: str) -> None:
+    """原子写入：先写临时文件再 rename，防止崩溃时文件损坏."""
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            delete=False, dir=str(path.parent), prefix=".hermes_lark_", mode="w", encoding="utf-8"
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            tmp.write(content)
+        shutil.copymode(path, tmp_path)
+        os.replace(str(tmp_path), str(path))
+    except BaseException:
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+        raise
+
+
 class PatcherError(RuntimeError):
     pass
 
@@ -416,7 +436,7 @@ class Patcher:
         else:
             self._backup()
         content = self._inject_all(content)
-        self._atomic_write(self.run_path, content)
+        _atomic_write(self.run_path, content)
 
     def remove(self) -> None:
         content = self.run_path.read_text(encoding="utf-8")
@@ -424,7 +444,7 @@ class Patcher:
             return
         for begin, end in self.MARKERS:
             content = _remove_block(content, begin, end)
-        self._atomic_write(self.run_path, content)
+        _atomic_write(self.run_path, content)
 
     def restore(self) -> None:
         backup = self.run_path.with_suffix(self.run_path.suffix + _BACKUP_SUFFIX)
@@ -436,21 +456,6 @@ class Patcher:
         backup = self.run_path.with_suffix(self.run_path.suffix + _BACKUP_SUFFIX)
         if not backup.exists():
             shutil.copy2(self.run_path, backup)
-
-    @staticmethod
-    def _atomic_write(path: Path, content: str) -> None:
-        """Atomic write: write to temp file then rename, preventing corruption on crash."""
-        import tempfile
-        tmp = Path(tempfile.mktemp(prefix=".hermes_lark_", dir=str(path.parent)))
-        try:
-            tmp.write_text(content, encoding="utf-8")
-            os.replace(str(tmp), str(path))
-        except BaseException:
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise
 
     def _inject_all(self, content: str) -> str:
         tree = ast.parse(content)
@@ -648,14 +653,14 @@ class CronPatcher:
         indent = _safe_indent(lines, inject_idx)
         hook = _cron_deliver_hook(indent)
         lines[inject_idx + 1 : inject_idx + 1] = hook.splitlines(keepends=True)
-        self.cron_path.write_text("".join(lines), encoding="utf-8")
+        _atomic_write(self.cron_path, "".join(lines))
 
     def remove(self) -> None:
         content = self.cron_path.read_text(encoding="utf-8")
         if MK_CRON_DELIVER not in content:
             return
         content = _remove_block(content, MK_CRON_DELIVER, MK_CRON_DELIVER_END)
-        self.cron_path.write_text(content, encoding="utf-8")
+        _atomic_write(self.cron_path, content)
 
     def restore(self) -> None:
         backup = self.cron_path.with_suffix(self.cron_path.suffix + _BACKUP_SUFFIX)
