@@ -460,7 +460,7 @@ def build_streaming_card_v2(
 def _merge_reasoning_segments(segments: list[Segment]) -> Segment | None:
     """聚合所有 REASONING 段为一个虚拟 segment.
 
-    合并所有非空 REASONING 段的 text，用 --- 分隔；elapsed_ms 取最大。
+    合并所有非空 REASONING 段的 text，用 --- 分隔；elapsed_ms 取总和。
     第一个非空段的 el_id / text_el_id 保留，供 controller 重用。
     """
     parts: list[str] = []
@@ -474,7 +474,7 @@ def _merge_reasoning_segments(segments: list[Segment]) -> Segment | None:
         else:
             parts.append("\n\n---\n\n")
         parts.append(s.text)
-        total_ms = max(total_ms, s.elapsed_ms)
+        total_ms += s.elapsed_ms
     if first is None:
         return None
     merged = Segment(SegmentType.REASONING, first.el_id)

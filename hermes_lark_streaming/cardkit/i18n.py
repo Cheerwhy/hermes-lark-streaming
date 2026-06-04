@@ -26,7 +26,6 @@ _T: dict[str, tuple[str, str]] = {
     "thought": ("Thought", "思考"),
     "thinking_panel": ("Thinking", "思考中"),
     "thought_for": ("Thought for {}", "思考了 {}"),
-    "thought_steps_for": ("Thought for {} · {} step{}", "思考了 {} · {} 步"),
     "done": ("Done.", "完成。"),
 }
 

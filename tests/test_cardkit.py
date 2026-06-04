@@ -805,9 +805,9 @@ class TestReasoningPanelStepCount:
         en, zh = self._reasoning_title(card)
         assert "3 steps" in en, f"expected '3 steps' in: {en}"
         assert "3 步" in zh, f"expected '3 步' in: {zh}"
-        # elapsed 取最大（hermes 现有语义）
-        assert "3.0s" in en, f"expected max elapsed 3.0s in: {en}"
-        assert "3.0s" in zh, f"expected 3.0s in: {zh}"
+        # elapsed 是所有段耗时总和（总思考时间）
+        assert "6.0s" in en, f"expected total elapsed 6.0s in: {en}"
+        assert "6.0s" in zh, f"expected 6.0s in: {zh}"
 
     def test_single_reasoning_hides_step_count(self) -> None:
         """1 段 reasoning 时不显示步数（保持原行为）."""
