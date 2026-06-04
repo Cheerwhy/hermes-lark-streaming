@@ -245,12 +245,18 @@ def _escape_md(value: str) -> str:
 
 
 def _build_reasoning_panel(
-    text: str, elapsed_ms: float = 0, *, expanded: bool = False, element_id: str | None = None,
+    text: str, elapsed_ms: float = 0, *, step_count: int = 0, expanded: bool = False, element_id: str | None = None,
     text_element_id: str | None = REASONING_TEXT_ELEMENT_ID,
 ) -> dict:
     if elapsed_ms > 0:
         d = _format_elapsed(elapsed_ms)
-        en_label, zh_label = _T["thought_for"][0].format(d), _T["thought_for"][1].format(d)
+        if step_count > 1:
+            tpl_en, tpl_zh = _T["thought_steps_for"]
+            step_s = "s" if step_count > 1 else ""
+            en_label = tpl_en.format(d, step_count, step_s)
+            zh_label = tpl_zh.format(d, step_count)
+        else:
+            en_label, zh_label = _T["thought_for"][0].format(d), _T["thought_for"][1].format(d)
     elif not text.strip():
         en_label, zh_label = _T["thinking_panel"]
     else:
@@ -536,6 +542,9 @@ def build_complete_card(
     merged_reason = _merge_reasoning_segments(segments) if should_merge_reason else None
     merged_tool_indices = _merge_tool_segments(segments, len(all_tool_steps)) if should_merge_tool else None
 
+    # 被合并的 reasoning 段数 → 标题里 "N 步"
+    reasoning_step_count = sum(1 for s in segments if s.type == SegmentType.REASONING) if should_merge_reason else 0
+
     # 跟踪是否已经输出了合并后的 panel（避免循环里重复）
     reason_emitted = False
     tool_emitted = False
@@ -546,6 +555,7 @@ def build_complete_card(
                 if not reason_emitted:
                     elements.append(_build_reasoning_panel(
                         merged_reason.text, merged_reason.elapsed_ms,
+                        step_count=reasoning_step_count,
                         expanded=panel_expanded,
                         element_id=None, text_element_id=None,
                     ))

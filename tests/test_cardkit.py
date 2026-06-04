@@ -773,3 +773,67 @@ class TestCompleteCardMergeSegments:
         assert tool_count == 1
         # answer 元素存在
         assert any("final" in str(e) for e in card["body"]["elements"])
+
+
+class TestReasoningPanelStepCount:
+    """验证 reasoning panel 标题在合并时显示步数."""
+
+    def _reasoning_title(self, card: dict) -> tuple[str, str]:
+        """提取 reasoning panel 的 en/zh 标题."""
+        for e in card["body"]["elements"]:
+            if e.get("tag") != "collapsible_panel":
+                continue
+            title = e.get("header", {}).get("title", {})
+            content = title.get("content", "")
+            if "Thought" in content or "思考" in content:
+                i18n = title.get("i18n_content", {})
+                return content, i18n.get("zh_cn", "")
+        return "", ""
+
+    def test_merged_reasoning_shows_step_count(self) -> None:
+        """3 段 thinking 合并时标题应显示 '3 steps' / '3 步'."""
+        segs = [
+            _seg("reasoning", "t1", elapsed_ms=1000),
+            _seg("reasoning", "t2", elapsed_ms=2000),
+            _seg("reasoning", "t3", elapsed_ms=3000),
+            _seg("answer", "done"),
+        ]
+        card = build_complete_card(
+            segments=segs, all_tool_steps=[],
+            merge_segments=True, merge_threshold=1,
+        )
+        en, zh = self._reasoning_title(card)
+        assert "3 steps" in en, f"expected '3 steps' in: {en}"
+        assert "3 步" in zh, f"expected '3 步' in: {zh}"
+        # elapsed 取最大（hermes 现有语义）
+        assert "3.0s" in en, f"expected max elapsed 3.0s in: {en}"
+        assert "3.0s" in zh, f"expected 3.0s in: {zh}"
+
+    def test_single_reasoning_hides_step_count(self) -> None:
+        """1 段 reasoning 时不显示步数（保持原行为）."""
+        card = build_complete_card(
+            segments=[_seg("reasoning", "solo", elapsed_ms=2500), _seg("answer", "ok")],
+            all_tool_steps=[], merge_segments=True, merge_threshold=1,
+        )
+        en, zh = self._reasoning_title(card)
+        assert "step" not in en.lower(), f"single reasoning should not show step: {en}"
+        assert "步" not in zh, f"single reasoning should not show 步: {zh}"
+        assert "2.5s" in en and "2.5s" in zh
+
+    def test_tool_panel_uses_singular_for_one_step(self) -> None:
+        """回归测试：单步 tool 标题 '1 step' / '1 步'（不被影响）."""
+        card = build_complete_card(
+            segments=[
+                _seg("tool", tool_offset=0, tool_end_offset=1),
+                _seg("answer", "ok"),
+            ],
+            all_tool_steps=[{"name": "x", "title": "X", "status": "success"}],
+            merge_segments=True, merge_threshold=1,
+        )
+        for e in card["body"]["elements"]:
+            if e.get("tag") != "collapsible_panel":
+                continue
+            title = e.get("header", {}).get("title", {})
+            content = title.get("content", "")
+            if "Tool" in content:
+                assert "1 step" in content, f"single tool step: {content}"
