@@ -467,6 +467,7 @@ class TestBuildSegmentCompleteCard:
                 _seg("answer", "a2"),
             ],
             all_tool_steps=[_STEP_SUCCESS, _STEP_RUNNING],
+            merge_segments=False,
         )
         contents = [str(e) for e in card["body"]["elements"]]
         r1 = next(i for i, c in enumerate(contents) if "r1" in c)
@@ -640,3 +641,135 @@ class TestCompleteCardFooter:
         )
         tags = [e.get("tag") for e in card["body"]["elements"]]
         assert "hr" not in tags
+
+
+class TestCompleteCardMergeSegments:
+    """测试 build_complete_card 的 segment 合并行为."""
+
+    def _panel_titles(self, card: dict) -> list[str]:
+        """提取所有 collapsible_panel 的标题文本."""
+        titles: list[str] = []
+        for e in card["body"]["elements"]:
+            if e.get("tag") != "collapsible_panel":
+                continue
+            title = e.get("header", {}).get("title", {}).get("content", "")
+            titles.append(title)
+        return titles
+
+    def test_merge_disabled_keeps_separate_panels(self) -> None:
+        """merge_segments=False 时保持原行为 — 每个段一个 panel."""
+        segs = [
+            _seg("reasoning", "think 1", elapsed_ms=1000),
+            _seg("reasoning", "think 2", elapsed_ms=2000),
+            _seg("answer", "result"),
+        ]
+        card = build_complete_card(
+            segments=segs, all_tool_steps=[], merge_segments=False,
+        )
+        titles = self._panel_titles(card)
+        # 应该有 2 个 thinking panel
+        assert sum(1 for t in titles if "Thought" in t or "思考了" in t) == 2
+
+    def test_merge_enabled_combines_reasoning(self) -> None:
+        """merge_segments=True + 段数 > 阈值时合并."""
+        segs = [
+            _seg("reasoning", "first thought", elapsed_ms=1000),
+            _seg("reasoning", "second thought", elapsed_ms=2000),
+            _seg("answer", "final answer"),
+        ]
+        card = build_complete_card(
+            segments=segs, all_tool_steps=[], merge_segments=True, merge_threshold=1,
+        )
+        titles = self._panel_titles(card)
+        # 2 段 thinking 应该合并成 1 个 panel
+        think_titles = [t for t in titles if "Thought" in t or "思考了" in t]
+        assert len(think_titles) == 1
+        # panel 元素应该包含两段内容（用 --- 分隔）
+        # 找出 reasoning panel（用 text 元素包含 "first thought" 的 panel）
+        for e in card["body"]["elements"]:
+            if e.get("tag") != "collapsible_panel":
+                continue
+            for sub in e.get("elements", []):
+                if sub.get("tag") == "markdown" and "first thought" in sub.get("content", ""):
+                    content = sub["content"]
+                    assert "second thought" in content
+                    assert "---" in content
+                    return
+        raise AssertionError("未找到合并后的 reasoning panel")
+
+    def test_merge_tool_segments(self) -> None:
+        """多个 TOOL 段合并成 1 个 panel，steps 范围是 union."""
+        steps = [
+            {"name": "a", "title": "A", "status": "success"},
+            {"name": "b", "title": "B", "status": "success"},
+            {"name": "c", "title": "C", "status": "success"},
+        ]
+        segs = [
+            _seg("tool", tool_offset=0, tool_end_offset=1),
+            _seg("tool", tool_offset=2, tool_end_offset=3),
+        ]
+        card = build_complete_card(
+            segments=segs, all_tool_steps=steps,
+            merge_segments=True, merge_threshold=1,
+        )
+        # 应该只有 1 个 tool panel
+        tool_titles = [t for t in self._panel_titles(card) if "Tool" in t or "工具执行" in t or "工具使用" in t]
+        assert len(tool_titles) == 1
+        # 2 步合并（A 和 C）
+        for e in card["body"]["elements"]:
+            if e.get("tag") != "collapsible_panel":
+                continue
+            title = e.get("header", {}).get("title", {}).get("content", "")
+            if "Tool" not in title and "工具执行" not in title and "工具使用" not in title:
+                continue
+            # 应该有 2 步（A, C），不是 3
+            sub_titles = [
+                s.get("text", {}).get("content", "")
+                for s in e.get("elements", [])
+                if s.get("tag") == "div"
+            ]
+            assert len(sub_titles) == 2
+            return
+        raise AssertionError("未找到 tool panel")
+
+    def test_merge_threshold_suppresses_short_runs(self) -> None:
+        """merge_threshold=5 时，2 段不合并（≤ 阈值）."""
+        segs = [
+            _seg("reasoning", "only one", elapsed_ms=1000),
+            _seg("reasoning", "second", elapsed_ms=2000),
+        ]
+        card = build_complete_card(
+            segments=segs, all_tool_steps=[],
+            merge_segments=True, merge_threshold=5,
+        )
+        titles = self._panel_titles(card)
+        # 2 段 ≤ 5，不合并 — 应该有 2 个独立 panel
+        think_titles = [t for t in titles if "Thought" in t or "思考了" in t]
+        assert len(think_titles) == 2
+
+    def test_mixed_reasoning_and_tool_all_merged(self) -> None:
+        """混合场景：3 段 thinking + 2 个 tool 段 + answer → 2 个 panel + answer."""
+        segs = [
+            _seg("reasoning", "t1", elapsed_ms=500),
+            _seg("tool", tool_offset=0, tool_end_offset=1),
+            _seg("reasoning", "t2", elapsed_ms=800),
+            _seg("tool", tool_offset=1, tool_end_offset=2),
+            _seg("reasoning", "t3", elapsed_ms=300),
+            _seg("answer", "final"),
+        ]
+        steps = [
+            {"name": "x", "title": "X", "status": "success"},
+            {"name": "y", "title": "Y", "status": "success"},
+        ]
+        card = build_complete_card(
+            segments=segs, all_tool_steps=steps,
+            merge_segments=True, merge_threshold=1,
+        )
+        titles = self._panel_titles(card)
+        # 1 个 reasoning + 1 个 tool = 2 个 panel
+        think_count = sum(1 for t in titles if "Thought" in t or "思考了" in t)
+        tool_count = sum(1 for t in titles if "Tool" in t or "工具执行" in t or "工具使用" in t)
+        assert think_count == 1
+        assert tool_count == 1
+        # answer 元素存在
+        assert any("final" in str(e) for e in card["body"]["elements"])

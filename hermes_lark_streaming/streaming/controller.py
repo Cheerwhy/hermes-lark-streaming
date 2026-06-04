@@ -477,6 +477,8 @@ class StreamingController:
             panel_expanded=self._cfg.panel_expanded,
             header_enabled=False,
             body_text_size=self._cfg.body_text_size,
+            merge_segments=self._cfg.merge_segments,
+            merge_threshold=self._cfg.merge_threshold,
         )
 
         try:
@@ -580,6 +582,8 @@ class StreamingController:
             panel_expanded=self._cfg.panel_expanded,
             header_enabled=self._cfg.header_enabled,
             body_text_size=self._cfg.body_text_size,
+            merge_segments=self._cfg.merge_segments,
+            merge_threshold=self._cfg.merge_threshold,
         )
 
         streaming_closed = False

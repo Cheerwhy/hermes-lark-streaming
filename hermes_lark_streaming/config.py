@@ -122,6 +122,31 @@ class Config:
         footer = sec.get("footer", {})
         return bool(footer.get("show_label", False))
 
+    @property
+    def merge_segments(self) -> bool:
+        """完成态卡片是否把同一任务的多个 thinking/tool 段合并为单个 panel.
+
+        True: 所有 REASONING 段合并成 1 个 reasoning panel，所有 TOOL 段合并成 1 个 tool panel。
+        False: 保持原行为，每个 segment 一个 panel。
+        """
+        sec = self._streaming_sec()
+        return bool(sec.get("merge_segments", True))
+
+    @property
+    def merge_threshold(self) -> int:
+        """启用合并的最小段数阈值.
+
+        当 REASONING（或 TOOL）段数 > merge_threshold 时启用合并；
+        ≤ 阈值时保持原行为（每个段独立 panel），避免对短任务强制聚合。
+        默认 1（只要多段就合并）。
+        """
+        sec = self._streaming_sec()
+        raw = sec.get("merge_threshold", 1)
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 1
+
     @staticmethod
     def _default_footer_fields() -> list[list[str]]:
         return [["status", "elapsed", "context", "model"]]

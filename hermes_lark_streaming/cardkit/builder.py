@@ -451,6 +451,53 @@ def build_streaming_card_v2(
     return card
 
 
+def _merge_reasoning_segments(segments: list[Segment]) -> Segment | None:
+    """聚合所有 REASONING 段为一个虚拟 segment.
+
+    合并所有非空 REASONING 段的 text，用 --- 分隔；elapsed_ms 取最大。
+    第一个非空段的 el_id / text_el_id 保留，供 controller 重用。
+    """
+    parts: list[str] = []
+    total_ms: float = 0.0
+    first: Segment | None = None
+    for s in segments:
+        if s.type != SegmentType.REASONING or not s.text:
+            continue
+        if first is None:
+            first = s
+        else:
+            parts.append("\n\n---\n\n")
+        parts.append(s.text)
+        total_ms = max(total_ms, s.elapsed_ms)
+    if first is None:
+        return None
+    merged = Segment(SegmentType.REASONING, first.el_id)
+    merged.text_el_id = first.text_el_id
+    merged.text = "".join(parts)
+    merged.elapsed_ms = total_ms
+    return merged
+
+
+def _merge_tool_segments(
+    segments: list[Segment], total_steps: int
+) -> list[int] | None:
+    """聚合所有 TOOL 段的 step 索引集合（去重、按顺序）.
+
+    tool_end_offset 在 hermes 语义中是切片结尾（不含），不能简单 union
+    [start, end) 区间。改为展开每个段的 step 索引后去重排序。
+    """
+    indices: set[int] = set()
+    for s in segments:
+        if s.type != SegmentType.TOOL:
+            continue
+        s_start = s.tool_offset
+        s_end = s.tool_end_offset if s.tool_end_offset else total_steps
+        indices.update(range(s_start, s_end))
+    if not indices:
+        return None
+    return sorted(indices)
+
+
 def build_complete_card(
     *,
     segments: list[Segment],
@@ -465,19 +512,60 @@ def build_complete_card(
     panel_expanded: bool = False,
     header_enabled: bool = False,
     body_text_size: str = "normal_v2",
+    merge_segments: bool = True,
+    merge_threshold: int = 1,
 ) -> dict[str, Any]:
-    """完成态流式卡片 — 按 segments 顺序渲染."""
+    """完成态流式卡片 — 按 segments 顺序渲染.
+
+    合并选项:
+        merge_segments=True 且 同类型段数 > merge_threshold 时:
+            所有 REASONING 段合并为 1 个 panel，所有 TOOL 段合并为 1 个 panel。
+            ANSWER 保持原样（一般只有 1 段）。
+        否则: 每个 segment 渲染一个 panel（原行为）。
+    """
     elements: list[dict] = []
     has_answer = False
 
+    # 预计算是否需要合并
+    reason_count = sum(1 for s in segments if s.type == SegmentType.REASONING and s.text)
+    tool_count = sum(1 for s in segments if s.type == SegmentType.TOOL)
+    should_merge_reason = merge_segments and reason_count > merge_threshold
+    should_merge_tool = merge_segments and tool_count > merge_threshold
+
+    # 预计算聚合后的 reasoning segment 和 tool step 索引
+    merged_reason = _merge_reasoning_segments(segments) if should_merge_reason else None
+    merged_tool_indices = _merge_tool_segments(segments, len(all_tool_steps)) if should_merge_tool else None
+
+    # 跟踪是否已经输出了合并后的 panel（避免循环里重复）
+    reason_emitted = False
+    tool_emitted = False
+
     for seg in segments:
         if seg.type == SegmentType.REASONING:
+            if should_merge_reason and merged_reason is not None:
+                if not reason_emitted:
+                    elements.append(_build_reasoning_panel(
+                        merged_reason.text, merged_reason.elapsed_ms,
+                        expanded=panel_expanded,
+                        element_id=None, text_element_id=None,
+                    ))
+                    reason_emitted = True
+                continue
             if seg.text:
                 elements.append(_build_reasoning_panel(
                     seg.text, seg.elapsed_ms, expanded=panel_expanded,
                     element_id=None, text_element_id=None,
                 ))
         elif seg.type == SegmentType.TOOL:
+            if should_merge_tool and merged_tool_indices is not None:
+                if not tool_emitted:
+                    steps = [all_tool_steps[i] for i in merged_tool_indices if i < len(all_tool_steps)]
+                    if steps:
+                        elements.append(_build_tool_panel(
+                            steps, expanded=panel_expanded, element_id=None,
+                        ))
+                    tool_emitted = True
+                continue
             start = seg.tool_offset
             end = seg.tool_end_offset if seg.tool_end_offset else len(all_tool_steps)
             steps = all_tool_steps[start:end]
