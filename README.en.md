@@ -121,7 +121,7 @@ streaming:
     fields:
       - [status, elapsed, context, model]
     show_label: false
-  panel_expanded: false   # Completion panel collapse, default false
+  panel_expanded: false   # Keep completion panels expanded, default false
 ```
 
 **Header** (`streaming.header.enabled`): Controls whether the card displays a status header bar. When enabled, the header auto-themes by state — blue for streaming, green for completed, red for stopped/error. Default: disabled.
@@ -142,7 +142,7 @@ streaming:
 
 **Show Label** (`footer.show_label`): Whether to display field labels like "Elapsed", "Context". Default: `false`.
 
-**Panel Collapse** (`panel_expanded`): Reasoning and tool panels are collapsed by default in completion cards. Set to `true` to keep them expanded.
+**Panel Expand** (`panel_expanded`): Reasoning and tool panels are collapsed by default in completion cards. Set to `true` to keep them expanded.
 
 ---
 

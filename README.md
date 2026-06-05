@@ -121,7 +121,7 @@ streaming:
     fields:
       - [status, elapsed, context, model]
     show_label: false
-  panel_expanded: false   # 完成态面板折叠，默认 false
+  panel_expanded: false   # 完成态面板保持展开，默认 false
 ```
 
 **Header**（`streaming.header.enabled`）：控制卡片是否显示顶部状态栏。开启后根据状态自动着色 — 流式中蓝色、完成绿色、中断/错误红色。默认关闭。
@@ -142,7 +142,7 @@ streaming:
 
 **显示标签**（`footer.show_label`）：是否展示字段标签（如 "Elapsed"、"Context"）。默认：`false`。
 
-**面板折叠**（`panel_expanded`）：完成态卡片中推理面板和工具面板默认折叠，设为 `true` 保持展开。
+**面板展开**（`panel_expanded`）：完成态卡片中推理面板和工具面板默认折叠，设为 `true` 保持展开。
 
 ---
 
