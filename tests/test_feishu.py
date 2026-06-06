@@ -26,7 +26,13 @@ def _client_with(**methods: AsyncMock) -> FeishuClient:
     client._client = SimpleNamespace(  # type: ignore[attr-defined]
         cardkit=SimpleNamespace(
             v1=SimpleNamespace(
-                card=SimpleNamespace(acreate=methods.get("card_create", AsyncMock())),
+                card=SimpleNamespace(
+                    acreate=methods.get("card_create", AsyncMock()),
+                    aupdate=methods.get("card_update", AsyncMock()),
+                    abatch_update=methods.get("batch_update", AsyncMock()),
+                    asettings=methods.get("settings", AsyncMock()),
+                ),
+                card_element=SimpleNamespace(content=methods.get("card_element_content", AsyncMock())),
             ),
         ),
         im=SimpleNamespace(
@@ -53,6 +59,39 @@ async def test_cardkit_create_retries_gateway_timeout_once() -> None:
 
     assert await client.cardkit_create({"schema": "2.0"}) == "card-ok"
     assert create.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cardkit_create_retries_server_internal_error() -> None:
+    create = AsyncMock(
+        side_effect=[
+            _Resp(ok=False, code=300000, msg="Server Internal Error"),
+            _Resp(ok=True, data=SimpleNamespace(card_id="card-ok")),
+        ]
+    )
+    client = _client_with(card_create=create)
+
+    assert await client.cardkit_create({"schema": "2.0"}) == "card-ok"
+    assert create.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cardkit_batch_update_retries_internal_error() -> None:
+    batch_update = AsyncMock(
+        side_effect=[
+            _Resp(ok=False, code=1663, msg="internal error"),
+            _Resp(ok=True),
+        ]
+    )
+    client = _client_with(batch_update=batch_update)
+
+    await client.cardkit_batch_update("card", [{"action": "add"}], sequence=7)
+
+    assert batch_update.await_count == 2
+    first_request = batch_update.await_args_list[0].args[0]
+    second_request = batch_update.await_args_list[1].args[0]
+    assert second_request.card_id == first_request.card_id
+    assert second_request.request_body.sequence == first_request.request_body.sequence
 
 
 @pytest.mark.asyncio

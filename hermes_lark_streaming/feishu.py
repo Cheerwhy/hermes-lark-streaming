@@ -39,7 +39,16 @@ from lark_oapi.api.im.v1 import (
 _logger = logging.getLogger("hermes_lark_streaming")
 
 CARDKIT_GATEWAY_TIMEOUT = 2200
-_TRANSIENT_RETRY_DELAYS_SEC = (0.15, 0.5)
+CARDKIT_INTERNAL_ERROR = 1663
+CARDKIT_SERVER_INTERNAL_ERROR = 300000
+CARDKIT_TRANSIENT_ERROR_CODES = frozenset(
+    {
+        CARDKIT_GATEWAY_TIMEOUT,
+        CARDKIT_INTERNAL_ERROR,
+        CARDKIT_SERVER_INTERNAL_ERROR,
+    }
+)
+_TRANSIENT_RETRY_DELAYS_SEC = (0.15, 0.5, 1.0)
 
 
 def _sanitize_message(msg: str) -> str:
@@ -116,7 +125,7 @@ class FeishuClient:
         return json.dumps(obj, ensure_ascii=False)
 
     async def _checked_call(self, operation: str, call: Any) -> Any:
-        """Run a Feishu SDK call and retry transient gateway timeouts."""
+        """Run a Feishu SDK call and retry transient CardKit/Lark server errors."""
         attempts = len(_TRANSIENT_RETRY_DELAYS_SEC) + 1
         last_error: FeishuAPIError | None = None
         for attempt in range(attempts):
@@ -126,12 +135,13 @@ class FeishuClient:
                 return resp
             except FeishuAPIError as exc:
                 last_error = exc
-                if exc.code != CARDKIT_GATEWAY_TIMEOUT or attempt >= attempts - 1:
+                if exc.code not in CARDKIT_TRANSIENT_ERROR_CODES or attempt >= attempts - 1:
                     raise
                 delay = _TRANSIENT_RETRY_DELAYS_SEC[attempt]
                 _logger.warning(
-                    "%s transient gateway timeout, retrying attempt=%d/%d delay=%.2fs",
+                    "%s transient Feishu API error code=%s, retrying attempt=%d/%d delay=%.2fs",
                     operation,
+                    exc.code,
                     attempt + 2,
                     attempts,
                     delay,
@@ -244,9 +254,9 @@ class FeishuClient:
             .request_body(body_builder.build())
             .build()
         )
-        resp = await asyncio.to_thread(
-            self._client.cardkit.v1.card_element.content,
-            request,
+        resp = await self._checked_call(
+            "cardkit_stream_element",
+            lambda: asyncio.to_thread(self._client.cardkit.v1.card_element.content, request),
         )
         self._check(resp, "cardkit_stream_element")
 
@@ -262,7 +272,10 @@ class FeishuClient:
         )
         body_builder = body_builder.sequence(sequence)
         request = UpdateCardRequest.builder().card_id(card_id).request_body(body_builder.build()).build()
-        resp = await self._client.cardkit.v1.card.aupdate(request)
+        resp = await self._checked_call(
+            "cardkit_update",
+            lambda: self._client.cardkit.v1.card.aupdate(request),
+        )
         self._check(resp, "cardkit_update")
 
     async def cardkit_batch_update(
@@ -275,7 +288,10 @@ class FeishuClient:
         """局部更新 CardKit 卡片（增删改组件）."""
         body_builder = BatchUpdateCardRequestBody.builder().sequence(sequence).actions(self._dumps(actions))
         request = BatchUpdateCardRequest.builder().card_id(card_id).request_body(body_builder.build()).build()
-        resp = await self._client.cardkit.v1.card.abatch_update(request)
+        resp = await self._checked_call(
+            "cardkit_batch_update",
+            lambda: self._client.cardkit.v1.card.abatch_update(request),
+        )
         self._check(resp, "cardkit_batch_update")
 
     async def cardkit_close_streaming(self, card_id: str, sequence: int = 0) -> None:
@@ -283,7 +299,10 @@ class FeishuClient:
         body_builder = SettingsCardRequestBody.builder().settings(self._dumps({"streaming_mode": False}))
         body_builder = body_builder.sequence(sequence)
         request = SettingsCardRequest.builder().card_id(card_id).request_body(body_builder.build()).build()
-        resp = await self._client.cardkit.v1.card.asettings(request)
+        resp = await self._checked_call(
+            "cardkit_close_streaming",
+            lambda: self._client.cardkit.v1.card.asettings(request),
+        )
         self._check(resp, "cardkit_close_streaming")
 
     async def upload_image(self, image_url: str) -> str | None:
