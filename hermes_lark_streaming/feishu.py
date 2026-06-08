@@ -254,11 +254,10 @@ class FeishuClient:
             .request_body(body_builder.build())
             .build()
         )
-        resp = await self._checked_call(
+        await self._checked_call(
             "cardkit_stream_element",
             lambda: asyncio.to_thread(self._client.cardkit.v1.card_element.content, request),
         )
-        self._check(resp, "cardkit_stream_element")
 
     async def cardkit_update(
         self,
@@ -272,11 +271,10 @@ class FeishuClient:
         )
         body_builder = body_builder.sequence(sequence)
         request = UpdateCardRequest.builder().card_id(card_id).request_body(body_builder.build()).build()
-        resp = await self._checked_call(
+        await self._checked_call(
             "cardkit_update",
             lambda: self._client.cardkit.v1.card.aupdate(request),
         )
-        self._check(resp, "cardkit_update")
 
     async def cardkit_batch_update(
         self,
@@ -288,22 +286,20 @@ class FeishuClient:
         """局部更新 CardKit 卡片（增删改组件）."""
         body_builder = BatchUpdateCardRequestBody.builder().sequence(sequence).actions(self._dumps(actions))
         request = BatchUpdateCardRequest.builder().card_id(card_id).request_body(body_builder.build()).build()
-        resp = await self._checked_call(
+        await self._checked_call(
             "cardkit_batch_update",
             lambda: self._client.cardkit.v1.card.abatch_update(request),
         )
-        self._check(resp, "cardkit_batch_update")
 
     async def cardkit_close_streaming(self, card_id: str, sequence: int = 0) -> None:
         """关闭 CardKit 卡片的流式模式."""
         body_builder = SettingsCardRequestBody.builder().settings(self._dumps({"streaming_mode": False}))
         body_builder = body_builder.sequence(sequence)
         request = SettingsCardRequest.builder().card_id(card_id).request_body(body_builder.build()).build()
-        resp = await self._checked_call(
+        await self._checked_call(
             "cardkit_close_streaming",
             lambda: self._client.cardkit.v1.card.asettings(request),
         )
-        self._check(resp, "cardkit_close_streaming")
 
     async def upload_image(self, image_url: str) -> str | None:
         """下载远程图片并上传到飞书，返回 img_key."""
