@@ -22,6 +22,7 @@ from hermes_lark_streaming.patcher import (
     CronPatcher,
     Patcher,
     PatcherError,
+    _cron_deliver_hook,
     _remove_block,
 )
 
@@ -90,6 +91,21 @@ def _patcher(path: Path) -> Patcher:
 
 def _cron_patcher(path: Path) -> CronPatcher:
     return CronPatcher(cron_path=path)
+
+
+def _build_cron_hook_runner():
+    namespace: dict = {}
+    source = (
+        "def deliver(targets, cleaned_delivery_content, loop):\n"
+        "    fallback = []\n"
+        "    for platform_name, chat_id in targets:\n"
+        "        delivered = False\n"
+        f"{_cron_deliver_hook('        ')}"
+        "        fallback.append(chat_id)\n"
+        "    return fallback\n"
+    )
+    exec(compile(source, "<cron-hook-test>", "exec"), namespace)
+    return namespace["deliver"]
 
 
 class TestVerify:
@@ -315,6 +331,36 @@ class TestCronApplyRemove:
         assert "on_cron_deliver" in content
         assert "platform_name.lower()" in content
         assert "delivered = True" in content
+
+    def test_injected_hook_skips_duplicate_card_target(self) -> None:
+        deliver = _build_cron_hook_runner()
+        sent = []
+
+        def fake_on_cron_deliver(*, chat_id, content, loop):
+            sent.append((chat_id, content))
+            return True
+
+        targets = [("feishu", "oc_same"), ("feishu", "oc_same")]
+        with patch(
+            "hermes_lark_streaming.patch.on_cron_deliver",
+            side_effect=fake_on_cron_deliver,
+        ):
+            fallback = deliver(targets, " failed ", object())
+
+        assert sent == [("oc_same", "failed")]
+        assert fallback == []
+
+    def test_injected_hook_retries_duplicate_target_after_failure(self) -> None:
+        deliver = _build_cron_hook_runner()
+        targets = [("feishu", "oc_same"), ("feishu", "oc_same")]
+        with patch(
+            "hermes_lark_streaming.patch.on_cron_deliver",
+            side_effect=[False, True],
+        ) as mock_deliver:
+            fallback = deliver(targets, "failed", object())
+
+        assert mock_deliver.call_count == 2
+        assert fallback == ["oc_same"]
 
 
 class TestCronBackupRestore:
