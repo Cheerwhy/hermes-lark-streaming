@@ -149,6 +149,43 @@ def on_message_needs_text_fallback(*, ctrl: Any, message_id: str) -> bool:
 
 
 @_safe_hook(default_return=False)
+async def on_queued_followup_boundary(*, ctrl: Any, message_id: str, result: dict[str, Any]) -> bool:
+    """Complete the current card before Hermes drains a queued follow-up turn."""
+    if not isinstance(result, dict) or result.get("interrupted"):
+        return False
+
+    sent = bool(
+        await ctrl.on_completed_wait(
+            message_id=message_id,
+            answer=result.get("final_response") or "",
+            duration=0.0,
+            model=result.get("model", ""),
+            tokens={
+                "input_tokens": result.get("input_tokens", 0),
+                "output_tokens": result.get("output_tokens", 0),
+            },
+            context={
+                "used_tokens": result.get("last_prompt_tokens", 0),
+                "max_tokens": result.get("context_length", 0),
+            },
+        )
+    )
+    if sent:
+        result["response_previewed"] = True
+        result["already_sent"] = True
+    else:
+        ctrl.consume_text_fallback(message_id)
+    return sent
+
+
+@_safe_hook()
+def on_queued_followup_result(*, ctrl: Any, message_id: str, followup_result: dict[str, Any]) -> None:
+    """Carry the deepest queued follow-up id back to the outer completion hook."""
+    if isinstance(followup_result, dict) and message_id:
+        followup_result.setdefault("_hermes_lark_completion_id", message_id)
+
+
+@_safe_hook(default_return=False)
 def on_tool_updated(
     *,
     ctrl: Any,

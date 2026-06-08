@@ -11,7 +11,7 @@ import shutil
 import textwrap
 import urllib.request
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -149,6 +149,8 @@ class TestVerify:
             def _interim_assistant_cb(text):
                 pass
             # Restart typing indicator so the user sees activity
+            was_interrupted = result.get("interrupted")
+            return _preserve_queued_followup_history_offset(result, followup_result)
         """)
         )
         with pytest.raises(PatcherError, match="reasoning_config"):
@@ -185,11 +187,17 @@ class TestApplyRemove:
         assert "_lark_next_message_id = getattr(pending_event, 'message_id', None) or next_message_id" in content
         assert "new_message_id=_lark_next_message_id" in content
         assert "anchor_id=_lark_next_anchor_id" in content
+        assert "# HERMES_LARK_FOLLOWUP_COMPLETE_BEGIN" in content
+        assert "message_id=event_message_id" in content
+        assert "on_queued_followup_boundary(message_id=event_message_id, result=result)" in content
+        assert "# HERMES_LARK_FOLLOWUP_RESULT_BEGIN" in content
+        assert "on_queued_followup_result(" in content
         assert "on_message_completed_wait(" in content
         assert "on_message_needs_text_fallback" in content
         assert "_lark_card_sent = await on_message_completed_wait(" in content
         assert "agent_result.pop('already_sent', None)" in content
-        assert "message_id=event.message_id" in content
+        assert "_lark_completion_id = agent_result.get('_hermes_lark_completion_id') or event.message_id" in content
+        assert "message_id=_lark_completion_id" in content
         assert "on_answer_delta(message_id=event_message_id" in content
         assert "on_thinking_delta(message_id=event_message_id" in content
         assert "on_reasoning_delta(message_id=event_message_id" in content
@@ -414,3 +422,50 @@ class TestOnCronDeliverHook:
             result = on_cron_deliver(chat_id="c1", content="hello", loop=loop)
             assert result is True
             ctrl.on_cron_deliver.assert_called_once_with(chat_id="c1", content="hello", loop=loop)
+
+
+class TestQueuedFollowupHooks:
+    @pytest.mark.asyncio
+    async def test_boundary_marks_result_when_card_sent(self) -> None:
+        from hermes_lark_streaming.patch import on_queued_followup_boundary
+
+        with patch("hermes_lark_streaming.patch.get_controller") as mock_get:
+            ctrl = MagicMock()
+            ctrl.enabled = True
+            ctrl.on_completed_wait = AsyncMock(return_value=True)
+            mock_get.return_value = ctrl
+            result = {"final_response": "ok", "model": "m"}
+
+            assert await on_queued_followup_boundary(message_id="msg", result=result) is True
+
+            assert result["response_previewed"] is True
+            assert result["already_sent"] is True
+
+    @pytest.mark.asyncio
+    async def test_boundary_consumes_fallback_when_card_not_sent(self) -> None:
+        from hermes_lark_streaming.patch import on_queued_followup_boundary
+
+        with patch("hermes_lark_streaming.patch.get_controller") as mock_get:
+            ctrl = MagicMock()
+            ctrl.enabled = True
+            ctrl.on_completed_wait = AsyncMock(return_value=False)
+            mock_get.return_value = ctrl
+            result = {"final_response": "plain"}
+
+            assert await on_queued_followup_boundary(message_id="msg", result=result) is False
+
+            ctrl.consume_text_fallback.assert_called_once_with("msg")
+            assert "response_previewed" not in result
+
+    def test_result_hook_preserves_deepest_completion_id(self) -> None:
+        from hermes_lark_streaming.patch import on_queued_followup_result
+
+        with patch("hermes_lark_streaming.patch.get_controller") as mock_get:
+            ctrl = MagicMock()
+            ctrl.enabled = True
+            mock_get.return_value = ctrl
+            result = {"_hermes_lark_completion_id": "deep"}
+
+            on_queued_followup_result(message_id="outer", followup_result=result)
+
+            assert result["_hermes_lark_completion_id"] == "deep"

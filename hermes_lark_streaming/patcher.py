@@ -19,6 +19,8 @@ _HOOK_NAMES = [
     "NORMALIZE",
     "START",
     "COMPLETE",
+    "FOLLOWUP_COMPLETE",
+    "FOLLOWUP_RESULT",
     "TOOL",
     "ANSWER",
     "THINKING",
@@ -33,14 +35,16 @@ MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END
 MK_NORMALIZE, MK_NORMALIZE_END = MARKERS[0]
 MK_START, MK_START_END = MARKERS[1]
 MK_COMPLETE, MK_COMPLETE_END = MARKERS[2]
-MK_TOOL, MK_TOOL_END = MARKERS[3]
-MK_ANSWER, MK_ANSWER_END = MARKERS[4]
-MK_THINKING, MK_THINKING_END = MARKERS[5]
-MK_REASONING, MK_REASONING_END = MARKERS[6]
-MK_BACKGROUND_REVIEW, MK_BACKGROUND_REVIEW_END = MARKERS[7]
-MK_ABORT, MK_ABORT_END = MARKERS[8]
-MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[9]
-MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[10]
+MK_FOLLOWUP_COMPLETE, MK_FOLLOWUP_COMPLETE_END = MARKERS[3]
+MK_FOLLOWUP_RESULT, MK_FOLLOWUP_RESULT_END = MARKERS[4]
+MK_TOOL, MK_TOOL_END = MARKERS[5]
+MK_ANSWER, MK_ANSWER_END = MARKERS[6]
+MK_THINKING, MK_THINKING_END = MARKERS[7]
+MK_REASONING, MK_REASONING_END = MARKERS[8]
+MK_BACKGROUND_REVIEW, MK_BACKGROUND_REVIEW_END = MARKERS[9]
+MK_ABORT, MK_ABORT_END = MARKERS[10]
+MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[11]
+MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[12]
 
 _BACKUP_SUFFIX = ".hermes_lark.bak"
 
@@ -104,8 +108,9 @@ def _complete_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_lark_streaming.patch import on_message_completed_wait, on_message_needs_text_fallback",
+            "    _lark_completion_id = agent_result.get('_hermes_lark_completion_id') or event.message_id",
             "    _lark_card_sent = await on_message_completed_wait(",
-            "        message_id=event.message_id,",
+            "        message_id=_lark_completion_id,",
             "        answer=response,",
             "        duration=_response_time,",
             "        model=agent_result.get('model', ''),",
@@ -120,8 +125,43 @@ def _complete_hook(indent: str) -> str:
             "    )",
             "    if _lark_card_sent:",
             "        agent_result['already_sent'] = True",
-            "    elif on_message_needs_text_fallback(message_id=event.message_id):",
+            "    elif on_message_needs_text_fallback(message_id=_lark_completion_id):",
             "        agent_result.pop('already_sent', None)",
+            "except Exception:",
+            "    pass",
+        ],
+    )
+
+
+def _followup_complete_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_FOLLOWUP_COMPLETE,
+        MK_FOLLOWUP_COMPLETE_END,
+        [
+            "try:",
+            "    from hermes_lark_streaming.patch import on_queued_followup_boundary",
+            "    await on_queued_followup_boundary(message_id=event_message_id, result=result)",
+            "except Exception:",
+            "    pass",
+        ],
+    )
+
+
+def _followup_result_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_FOLLOWUP_RESULT,
+        MK_FOLLOWUP_RESULT_END,
+        [
+            "try:",
+            "    from hermes_lark_streaming.patch import on_queued_followup_result",
+            "    _lark_followup_completion_id = next_message_id or getattr(pending_event, 'message_id', None)",
+            "    if _lark_followup_completion_id:",
+            "        on_queued_followup_result(",
+            "            message_id=_lark_followup_completion_id,",
+            "            followup_result=followup_result,",
+            "        )",
             "except Exception:",
             "    pass",
         ],
@@ -247,7 +287,9 @@ def _interrupt_hook(indent: str) -> str:
         MK_INTERRUPT_END,
         [
             "try:",
-            "    from hermes_lark_streaming.patch import on_message_interrupted, on_message_aborted",
+            "    from hermes_lark_streaming.patch import (",
+            "        on_message_aborted, on_message_interrupted, on_message_started,",
+            "    )",
             "    _lark_next_message_id = getattr(pending_event, 'message_id', None) or next_message_id",
             "    _lark_next_anchor_id = next_message_id",
             "    if was_interrupted and _lark_next_message_id:",
@@ -259,6 +301,12 @@ def _interrupt_hook(indent: str) -> str:
             "        )",
             "    elif was_interrupted:",
             "        on_message_aborted(message_id=event_message_id)",
+            "    elif pending_event is not None and _lark_next_message_id:",
+            "        on_message_started(",
+            "            message_id=_lark_next_message_id,",
+            "            chat_id=getattr(next_source, 'chat_id', source.chat_id),",
+            "            anchor_id=_lark_next_anchor_id,",
+            "        )",
             "except Exception:",
             "    pass",
         ],
@@ -412,6 +460,12 @@ class Patcher:
         if "Restart typing indicator so the user sees activity" not in content:
             raise PatcherError("Cannot find interrupt anchor in run.py — Hermes version may be incompatible")
 
+        if 'was_interrupted = result.get("interrupted")' not in content:
+            raise PatcherError("Cannot find queued follow-up boundary in run.py — Hermes version may be incompatible")
+
+        if "return _preserve_queued_followup_history_offset(result, followup_result)" not in content:
+            raise PatcherError("Cannot find queued follow-up return in run.py — Hermes version may be incompatible")
+
         if "agent.reasoning_config = reasoning_config" not in content:
             raise PatcherError("Cannot find reasoning_config anchor in run.py — Hermes version may be incompatible")
 
@@ -472,6 +526,8 @@ class Patcher:
             ("normalize", "normalize", _find_handle_message_source_site(tree, lines)),
             ("start", "start", _find_func_body(tree, lines, "_handle_message_with_agent")),
             ("complete", "complete", _find_handler_return(tree, lines)),
+            ("followup_complete", "followup_complete", _find_followup_complete_site(tree, lines)),
+            ("followup_result", "followup_result", _find_followup_result_site(tree, lines)),
             ("abort", "abort", _find_handler_abort(tree, lines)),
             ("interrupt", "interrupt", _find_interrupt_site(tree, lines)),
             ("tool", "tool", _find_func_body(tree, lines, "progress_callback")),
@@ -494,6 +550,8 @@ class Patcher:
             "normalize": _feishu_normalize_hook,
             "start": _start_hook,
             "complete": _complete_hook,
+            "followup_complete": _followup_complete_hook,
+            "followup_result": _followup_result_hook,
             "abort": _abort_hook,
             "interrupt": _interrupt_hook,
             "tool": _tool_hook,
@@ -589,6 +647,20 @@ def _find_interrupt_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] 
         if "Restart typing indicator so the user sees activity" in line:
             indent = _safe_indent(lines, i)
             return i, indent
+    return None
+
+
+def _find_followup_complete_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    for i, line in enumerate(lines):
+        if line.strip() == 'was_interrupted = result.get("interrupted")':
+            return i, _safe_indent(lines, i)
+    return None
+
+
+def _find_followup_result_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    for i, line in enumerate(lines):
+        if line.strip() == "return _preserve_queued_followup_history_offset(result, followup_result)":
+            return i, _safe_indent(lines, i)
     return None
 
 
