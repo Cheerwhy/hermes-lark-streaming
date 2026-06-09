@@ -61,9 +61,11 @@ def _resolve_module_path(module_name: str, hardcoded: Path) -> Path:
     try:
         spec = importlib.util.find_spec(module_name)
         if spec and spec.origin:
-            return Path(spec.origin)
-    except (ModuleNotFoundError, ValueError):
-        pass
+            candidate = Path(spec.origin).resolve()
+            if candidate.is_file() and candidate.suffix == ".py":
+                return candidate
+    except Exception:
+        _logger.debug("Failed to resolve Hermes module %s", module_name, exc_info=True)
     return hardcoded
 
 
