@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import importlib.util
 import logging
 import os
 import shutil
@@ -49,8 +50,29 @@ MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[12]
 _BACKUP_SUFFIX = ".hermes_lark.bak"
 
 _HERMES_HOME = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
-_RUN_PATH = _HERMES_HOME / "hermes-agent" / "gateway" / "run.py"
-_CRON_PATH = _HERMES_HOME / "hermes-agent" / "cron" / "scheduler.py"
+
+
+def _resolve_module_path(module_name: str, hardcoded: Path) -> Path:
+    """Discover the actual file path of a Hermes module.
+
+    Works for both git-clone (editable install) and pip-install scenarios.
+    Falls back to the hardcoded path so Patcher can report a clear error.
+    """
+    try:
+        spec = importlib.util.find_spec(module_name)
+        if spec and spec.origin:
+            return Path(spec.origin)
+    except (ModuleNotFoundError, ValueError):
+        pass
+    return hardcoded
+
+
+_RUN_PATH = _resolve_module_path(
+    "gateway.run", _HERMES_HOME / "hermes-agent" / "gateway" / "run.py"
+)
+_CRON_PATH = _resolve_module_path(
+    "cron.scheduler", _HERMES_HOME / "hermes-agent" / "cron" / "scheduler.py"
+)
 
 MK_CRON_DELIVER = f"# {PREFIX}_CRON_DELIVER_BEGIN"
 MK_CRON_DELIVER_END = f"# {PREFIX}_CRON_DELIVER_END"
