@@ -56,11 +56,19 @@ def _resolve_module_path(module_name: str, hardcoded: Path) -> Path:
     """Discover the actual file path of a Hermes module.
 
     Works for both git-clone (editable install) and pip-install scenarios.
-    Falls back to the hardcoded path so Patcher can report a clear error.
+    Resolves dotted modules without importing their parent package, then
+    falls back to the hardcoded path so Patcher can report a clear error.
     """
     try:
-        spec = importlib.util.find_spec(module_name)
-        if spec and spec.origin:
+        package_name, separator, relative_name = module_name.partition(".")
+        spec = importlib.util.find_spec(package_name)
+        if separator and spec and spec.submodule_search_locations:
+            relative_path = Path(*relative_name.split(".")).with_suffix(".py")
+            for location in spec.submodule_search_locations:
+                candidate = (Path(location) / relative_path).resolve()
+                if candidate.is_file():
+                    return candidate
+        elif spec and spec.origin:
             candidate = Path(spec.origin).resolve()
             if candidate.is_file() and candidate.suffix == ".py":
                 return candidate
