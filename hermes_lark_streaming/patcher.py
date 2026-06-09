@@ -52,29 +52,33 @@ _BACKUP_SUFFIX = ".hermes_lark.bak"
 _HERMES_HOME = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
 
 
+def _valid_source(path: Path) -> Path | None:
+    try:
+        candidate = path.resolve()
+        if candidate.is_file() and candidate.suffix == ".py":
+            return candidate
+    except (OSError, RuntimeError):
+        pass
+    return None
+
+
 def _resolve_module_path(module_name: str, hardcoded: Path) -> Path:
     """Discover the actual file path of a Hermes module.
 
     Uses the standard Hermes home layout when available, then falls back to
     module discovery for pip-install scenarios without importing parent packages.
     """
-    try:
-        hardcoded_candidate = hardcoded.resolve()
-        if hardcoded_candidate.is_file() and hardcoded_candidate.suffix == ".py":
-            return hardcoded_candidate
+    if candidate := _valid_source(hardcoded):
+        return candidate
 
-        package_name, separator, relative_name = module_name.partition(".")
+    try:
+        package_name, _, relative_name = module_name.partition(".")
         spec = importlib.util.find_spec(package_name)
-        if separator and spec and spec.submodule_search_locations:
+        if spec and spec.submodule_search_locations:
             relative_path = Path(*relative_name.split(".")).with_suffix(".py")
             for location in spec.submodule_search_locations:
-                candidate = (Path(location) / relative_path).resolve()
-                if candidate.is_file():
+                if candidate := _valid_source(Path(location) / relative_path):
                     return candidate
-        elif spec and spec.origin:
-            candidate = Path(spec.origin).resolve()
-            if candidate.is_file() and candidate.suffix == ".py":
-                return candidate
     except Exception:
         _logger.debug("Failed to resolve Hermes module %s", module_name, exc_info=True)
     return hardcoded
