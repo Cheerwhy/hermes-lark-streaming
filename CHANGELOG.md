@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.5] - 2026-06-10
+
+### 新增
+
+- Cron 推送卡片支持 header，显示任务名称和运行时间。修复 #57. (#59)
+
+### 修复
+
+- 自动发现 pip 安装的 Hermes 模块路径，不再依赖 git clone 标准目录布局。修复 #55. (#58)
+
+### Added
+
+- Cron delivery cards now support an optional header showing task name and run time. Fixes #57. (#59)
+
+### Fixed
+
+- Auto-discover Hermes module paths for pip-installed scenarios, no longer requiring the standard git-clone directory layout. Fixes #55. (#58)
+
+---
+
 ## [0.10.3] - 2026-06-09
 
 ### 新增
