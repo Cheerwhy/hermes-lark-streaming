@@ -94,7 +94,12 @@ def _cron_patcher(path: Path) -> CronPatcher:
 
 
 def _build_cron_hook_runner():
-    namespace: dict = {}
+    namespace: dict = {
+        "job": {
+            "name": "test",
+            "next_run_at": "2026-06-10T14:30:00+08:00",
+        }
+    }
     source = (
         "def deliver(targets, cleaned_delivery_content, loop):\n"
         "    fallback = []\n"
@@ -344,8 +349,10 @@ class TestCronApplyRemove:
         deliver = _build_cron_hook_runner()
         sent = []
 
-        def fake_on_cron_deliver(*, chat_id, content, loop):
-            sent.append((chat_id, content))
+        def fake_on_cron_deliver(
+            *, chat_id, content, loop, task_name, run_time
+        ):
+            sent.append((chat_id, content, task_name, run_time))
             return True
 
         targets = [("feishu", "oc_same"), ("feishu", "oc_same")]
@@ -355,7 +362,14 @@ class TestCronApplyRemove:
         ):
             fallback = deliver(targets, " failed ", object())
 
-        assert sent == [("oc_same", "failed")]
+        assert sent == [
+            (
+                "oc_same",
+                "failed",
+                "test",
+                "2026-06-10T14:30:00+08:00",
+            )
+        ]
         assert fallback == []
 
     def test_injected_hook_retries_duplicate_target_after_failure(self) -> None:
@@ -421,7 +435,10 @@ class TestOnCronDeliverHook:
             mock_get.return_value = ctrl
             result = on_cron_deliver(chat_id="c1", content="hello", loop=loop)
             assert result is True
-            ctrl.on_cron_deliver.assert_called_once_with(chat_id="c1", content="hello", loop=loop)
+            ctrl.on_cron_deliver.assert_called_once_with(
+                chat_id="c1", content="hello", loop=loop,
+                task_name="", run_time="",
+            )
 
 
 class TestQueuedFollowupHooks:

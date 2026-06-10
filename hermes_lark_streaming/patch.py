@@ -265,6 +265,8 @@ def on_cron_deliver(
     chat_id: str,
     content: str,
     loop: Any = None,
+    task_name: str = "",
+    run_time: str = "",
 ) -> bool:
     """[注入点 10] cron 推送 — 包装为飞书卡片发送."""
     if loop is None:
@@ -273,7 +275,10 @@ def on_cron_deliver(
         ctrl = get_controller()
         if not ctrl.enabled:
             return False
-        return bool(ctrl.on_cron_deliver(chat_id=chat_id, content=content, loop=loop))
+        return bool(ctrl.on_cron_deliver(
+            chat_id=chat_id, content=content, loop=loop,
+            task_name=task_name, run_time=run_time,
+        ))
     except Exception as exc:
         _logger.warning("on_cron_deliver error: %s", exc, exc_info=True)
         return False

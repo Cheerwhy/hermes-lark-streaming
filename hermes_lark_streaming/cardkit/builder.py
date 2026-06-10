@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
 
 from ..streaming.segments import Segment, SegmentType
@@ -528,13 +529,32 @@ def build_complete_card(
     return card
 
 
-def build_cron_card(content: str) -> dict[str, Any]:
-    """Cron 推送用的极简静态卡片 — schema 2.0，仅 markdown 内容."""
+def _format_run_time(run_time: str) -> str:
+    """将 ISO 时间戳格式化为可读日期时间，失败则原样返回."""
+    if not run_time:
+        return ""
+    try:
+        dt = datetime.fromisoformat(run_time)
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return run_time
+
+
+def build_cron_card(
+    content: str, *, task_name: str = "", run_time: str = ""
+) -> dict[str, Any]:
+    """Cron 推送用的极简静态卡片 — schema 2.0，可选 header + markdown 内容."""
     card: dict[str, Any] = {
         "schema": "2.0",
         "config": {"wide_screen_mode": True, "locales": _LOCALES},
         "body": {"elements": []},
     }
+    header_parts = [p for p in (task_name, _format_run_time(run_time)) if p]
+    if header_parts:
+        card["header"] = {
+            "title": {"tag": "lark_md", "content": ":Alarm: " + " · ".join(header_parts)},
+            "template": "blue",
+        }
     if not content.strip():
         return card
     summary = content[:120].replace("\n", " ").replace("```", "").strip()

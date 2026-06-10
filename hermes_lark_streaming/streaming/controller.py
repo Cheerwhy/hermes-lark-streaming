@@ -661,10 +661,12 @@ class StreamingController:
         session.mark_failed()
         return False
 
-    async def _do_cron_deliver(self, chat_id: str, content: str) -> None:
+    async def _do_cron_deliver(
+        self, chat_id: str, content: str, *, task_name: str = "", run_time: str = ""
+    ) -> None:
         await self._ensure_init()
         assert self._client is not None
-        card = build_cron_card(content)
+        card = build_cron_card(content, task_name=task_name, run_time=run_time)
         await self._client.send_card_to_chat(chat_id, card)
 
     async def _do_background_deliver(

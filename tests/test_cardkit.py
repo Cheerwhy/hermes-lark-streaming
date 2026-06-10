@@ -530,6 +530,60 @@ class TestBuildCronCard:
         card = build_cron_card(content)
         assert "| A | B |" in card["body"]["elements"][0]["content"]
 
+    def test_header_with_task_name(self) -> None:
+        from hermes_lark_streaming.cardkit.builder import build_cron_card
+
+        card = build_cron_card("Hello", task_name="daily-digest")
+        assert card["header"]["title"]["content"] == ":Alarm: daily-digest"
+        assert card["header"]["title"]["tag"] == "lark_md"
+        assert card["header"]["template"] == "blue"
+
+    def test_no_header_without_task_name(self) -> None:
+        from hermes_lark_streaming.cardkit.builder import build_cron_card
+
+        card = build_cron_card("Hello")
+        assert "header" not in card
+
+    def test_empty_task_name_no_header(self) -> None:
+        from hermes_lark_streaming.cardkit.builder import build_cron_card
+
+        card = build_cron_card("Hello", task_name="")
+        assert "header" not in card
+
+    def test_header_with_task_name_and_run_time(self) -> None:
+        from hermes_lark_streaming.cardkit.builder import build_cron_card
+
+        card = build_cron_card(
+            "Hello",
+            task_name="daily-digest",
+            run_time="2026-06-10T14:30:00+08:00",
+        )
+        assert card["header"]["title"]["content"] == ":Alarm: daily-digest · 2026-06-10 14:30"
+
+    def test_header_with_run_time_only(self) -> None:
+        from hermes_lark_streaming.cardkit.builder import build_cron_card
+
+        card = build_cron_card("Hello", run_time="2026-06-10T14:30:00+08:00")
+        assert card["header"]["title"]["content"] == ":Alarm: 2026-06-10 14:30"
+
+    def test_header_run_time_empty_string_no_header(self) -> None:
+        from hermes_lark_streaming.cardkit.builder import build_cron_card
+
+        card = build_cron_card("Hello", task_name="", run_time="")
+        assert "header" not in card
+
+    def test_header_invalid_run_time_falls_back_to_raw(self) -> None:
+        from hermes_lark_streaming.cardkit.builder import build_cron_card
+
+        card = build_cron_card("Hello", run_time="not-a-date")
+        assert card["header"]["title"]["content"] == ":Alarm: not-a-date"
+
+    def test_header_run_time_without_timezone(self) -> None:
+        from hermes_lark_streaming.cardkit.builder import build_cron_card
+
+        card = build_cron_card("Hello", run_time="2026-06-10T14:30:00")
+        assert card["header"]["title"]["content"] == ":Alarm: 2026-06-10 14:30"
+
 
 # --- Header ---
 

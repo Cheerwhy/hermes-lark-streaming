@@ -396,12 +396,14 @@ class StreamCardController(StreamingController):
         chat_id: str,
         content: str,
         loop: asyncio.AbstractEventLoop,
+        task_name: str = "",
+        run_time: str = "",
     ) -> bool:
         """Cron 推送 — 包装为静态卡片发送，成功返回 True."""
         if not self.enabled or not content or not chat_id:
             return False
         future = asyncio.run_coroutine_threadsafe(
-            self._do_cron_deliver(chat_id, content), loop
+            self._do_cron_deliver(chat_id, content, task_name=task_name, run_time=run_time), loop
         )
         try:
             future.result(timeout=30)
