@@ -331,19 +331,6 @@ class TestDispatch:
         assert ctrl.on_tool_update(message_id="msg_tool", tool_name="read", status="started") is True
         assert session.segment_state.segments[0].type == "tool"
 
-    def test_completed_dispatches(self) -> None:
-        ctrl = _setup_ctrl()
-        session = _make_session("msg_c")
-        session.state = SessionState.STREAMING
-        session.card_id = "card_123"
-        ctrl._sessions["msg_c"] = session
-        with (
-            patch.object(ctrl, "_do_complete_card", new_callable=AsyncMock),
-            patch.object(ctrl, "_fire_and_forget", side_effect=lambda coro, loop: coro.close()),
-        ):
-            ctrl.on_completed(message_id="msg_c")
-        assert session.flush._completed
-
     def test_session_without_segment_state_not_consumed(self) -> None:
         ctrl = _setup_ctrl()
         session = _make_session("msg_no_state")

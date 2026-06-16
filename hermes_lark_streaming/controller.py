@@ -62,9 +62,6 @@ class StreamCardController(StreamingController):
             )
             self._initialized = True
 
-    def _client_ok(self) -> bool:
-        return self._initialized and self._client is not None
-
     def _get_loop(self) -> asyncio.AbstractEventLoop | None:
         """获取事件循环，缓存以便跨线程复用."""
         try:
@@ -291,50 +288,6 @@ class StreamCardController(StreamingController):
         for key, val in list(self._interrupt_map.items()):
             if val == old_message_id:
                 self._interrupt_map[key] = new_message_id
-
-    def on_completed(
-        self,
-        *,
-        message_id: str,
-        answer: str = "",
-        duration: float = 0.0,
-        model: str = "",
-        tokens: dict | None = None,
-        context: dict | None = None,
-    ) -> bool:
-        """消息处理完成 — 构建终端卡片."""
-        if not self.enabled:
-            return False
-        session = self._completion_session(message_id)
-        if session is None:
-            return False
-        message_id = session.message_id
-
-        # 卡片创建失败 → 交回 gateway 正常回复
-        if session.state == SessionState.FAILED:
-            _logger.info("on_completed: msg=%s state=FAILED, yielding to gateway", message_id[:12])
-            self._mark_text_fallback_needed(session)
-            self._cleanup(message_id)
-            return False
-
-        _logger.info(
-            "on_completed: msg=%s has_card=%s state=%s",
-            message_id[:12],
-            session.has_card,
-            session.state,
-        )
-
-        self._apply_completion_payload(
-            session=session,
-            answer=answer,
-            duration=duration,
-            model=model,
-            tokens=tokens,
-            context=context,
-        )
-
-        self._complete_session(session)
-        return True
 
     async def on_completed_wait(
         self,
