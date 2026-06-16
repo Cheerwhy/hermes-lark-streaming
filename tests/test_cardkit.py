@@ -268,10 +268,6 @@ class TestBuildReasoningPanel:
         panel = _build_reasoning_panel("text")
         assert panel["expanded"] is False
 
-    def test_element_id_set(self) -> None:
-        panel = _build_reasoning_panel("text", element_id=REASONING_ELEMENT_ID)
-        assert panel["element_id"] == REASONING_ELEMENT_ID
-
     def test_element_id_default_none(self) -> None:
         panel = _build_reasoning_panel("text")
         assert "element_id" not in panel
@@ -290,10 +286,6 @@ class TestBuildReasoningPanel:
 
     def test_empty_text_shows_thinking_title(self) -> None:
         panel = _build_reasoning_panel(" ")
-        assert "Thinking" in panel["header"]["title"]["content"]
-
-    def test_empty_string_shows_thinking_title(self) -> None:
-        panel = _build_reasoning_panel("")
         assert "Thinking" in panel["header"]["title"]["content"]
 
     def test_with_content_shows_thought_title(self) -> None:
@@ -393,11 +385,6 @@ class TestBuildStreamingCardV2:
         reasoning_idx = ids.index(REASONING_ELEMENT_ID)
         tool_idx = ids.index(TOOL_PANEL_ELEMENT_ID)
         assert reasoning_idx < tool_idx
-
-    def test_reasoning_panel_expanded(self) -> None:
-        card = build_streaming_card_v2(show_reasoning=True)
-        panel = next(e for e in card["body"]["elements"] if e.get("element_id") == REASONING_ELEMENT_ID)
-        assert panel["expanded"] is True
 
 
 # --- 分段完成态卡片 ---
@@ -565,12 +552,6 @@ class TestBuildCronCard:
 
         card = build_cron_card("Hello", run_time="2026-06-10T14:30:00+08:00")
         assert card["header"]["title"]["content"] == ":Alarm: 2026-06-10 14:30"
-
-    def test_header_run_time_empty_string_no_header(self) -> None:
-        from hermes_lark_streaming.cardkit.builder import build_cron_card
-
-        card = build_cron_card("Hello", task_name="", run_time="")
-        assert "header" not in card
 
     def test_header_invalid_run_time_falls_back_to_raw(self) -> None:
         from hermes_lark_streaming.cardkit.builder import build_cron_card

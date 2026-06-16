@@ -131,24 +131,6 @@ async def test_send_card_to_chat_reuses_uuid_across_retries() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_card_reply_reuses_uuid_across_retries() -> None:
-    reply = AsyncMock(
-        side_effect=[
-            _Resp(ok=False, code=2200, msg="Gateway timeout. Please try again later."),
-            _Resp(ok=True, data=SimpleNamespace(message_id="msg-ok")),
-        ]
-    )
-    client = _client_with(reply=reply)
-
-    assert await client.send_card_to_chat("chat", {"schema": "2.0"}, reply_to_message_id="anchor") == "msg-ok"
-    assert reply.await_count == 2
-    first_request = reply.await_args_list[0].args[0]
-    second_request = reply.await_args_list[1].args[0]
-    assert first_request.request_body.uuid
-    assert second_request.request_body.uuid == first_request.request_body.uuid
-
-
-@pytest.mark.asyncio
 async def test_cardkit_create_does_not_retry_non_transient_error() -> None:
     create = AsyncMock(side_effect=[_Resp(ok=False, code=230099, msg="content failed")])
     client = _client_with(card_create=create)

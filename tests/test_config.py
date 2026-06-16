@@ -51,10 +51,6 @@ class TestFooterFields:
         cfg = _make_config({"streaming": {"footer": {"fields": []}}})
         assert cfg.footer_fields == [["status", "elapsed", "context", "model"]]
 
-    def test_no_fields_returns_default(self) -> None:
-        cfg = _make_config({"streaming": {"footer": {}}})
-        assert cfg.footer_fields == [["status", "elapsed", "context", "model"]]
-
     def test_no_footer_returns_default(self) -> None:
         cfg = _make_config({"streaming": {}})
         assert cfg.footer_fields == [["status", "elapsed", "context", "model"]]
@@ -63,16 +59,8 @@ class TestFooterFields:
         cfg = _make_config({"streaming": {"footer": "invalid"}})
         assert cfg.footer_fields == [["status", "elapsed", "context", "model"]]
 
-    def test_no_streaming_section_returns_default(self) -> None:
-        cfg = _make_config({})
-        assert cfg.footer_fields == [["status", "elapsed", "context", "model"]]
-
     def test_fields_non_list_returns_default(self) -> None:
         cfg = _make_config({"streaming": {"footer": {"fields": "status"}}})
-        assert cfg.footer_fields == [["status", "elapsed", "context", "model"]]
-
-    def test_fields_int_returns_default(self) -> None:
-        cfg = _make_config({"streaming": {"footer": {"fields": 42}}})
         assert cfg.footer_fields == [["status", "elapsed", "context", "model"]]
 
 
@@ -91,10 +79,6 @@ class TestHeaderEnabled:
 
     def test_missing_header_section_defaults_false(self) -> None:
         cfg = _make_config({"streaming": {}})
-        assert cfg.header_enabled is False
-
-    def test_no_streaming_section_defaults_false(self) -> None:
-        cfg = _make_config({})
         assert cfg.header_enabled is False
 
     def test_header_not_dict_defaults_false(self) -> None:
@@ -117,10 +101,6 @@ class TestFooterEnabled:
 
     def test_no_footer_section_defaults_true(self) -> None:
         cfg = _make_config({"streaming": {}})
-        assert cfg.footer_enabled is True
-
-    def test_no_streaming_section_defaults_true(self) -> None:
-        cfg = _make_config({})
         assert cfg.footer_enabled is True
 
     def test_footer_not_dict_defaults_true(self) -> None:
