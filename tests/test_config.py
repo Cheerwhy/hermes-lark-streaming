@@ -153,7 +153,7 @@ class TestFeishuBaseURL:
     def test_default_url(self) -> None:
         cfg = _make_config({"feishu": {"app_id": "id", "app_secret": "s"}})
         with patch.dict(os.environ, {}, clear=True):
-            assert cfg.feishu_base_url == "https://open.feishu.cn/open-apis"
+            assert cfg.feishu_base_url == "https://open.feishu.cn"
 
     def test_custom_url_from_config(self) -> None:
         cfg = _make_config({"feishu": {"app_id": "id", "app_secret": "s", "base_url": "https://custom.com"}})

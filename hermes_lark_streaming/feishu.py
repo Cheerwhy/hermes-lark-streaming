@@ -36,7 +36,11 @@ from lark_oapi.api.im.v1 import (
     ReplyMessageRequestBody,
 )
 
+from .config import DEFAULT_DOMAIN
+
 _logger = logging.getLogger("hermes_lark_streaming")
+
+_OPEN_APIS_SUFFIX = "/open-apis"
 
 CARDKIT_GATEWAY_TIMEOUT = 2200
 CARDKIT_INTERNAL_ERROR = 1663
@@ -88,7 +92,7 @@ MSG_NOT_FOUND = 1000023  # 消息不存在/已删除
 class FeishuClientConfig:
     app_id: str
     app_secret: str
-    base_url: str = "https://open.feishu.cn/open-apis"
+    base_url: str = DEFAULT_DOMAIN
 
     def __post_init__(self) -> None:
         if not isinstance(self.app_id, str) or not self.app_id.strip():
@@ -105,7 +109,13 @@ class FeishuClient:
 
     def __init__(self, config: FeishuClientConfig) -> None:
         self.config = config
-        builder = lark.Client.builder().app_id(config.app_id).app_secret(config.app_secret)
+        domain = config.base_url.strip().rstrip("/").removesuffix(_OPEN_APIS_SUFFIX) or DEFAULT_DOMAIN
+        builder = (
+            lark.Client.builder()
+            .app_id(config.app_id)
+            .app_secret(config.app_secret)
+            .domain(domain)
+        )
         self._client = builder.build()
 
     @staticmethod

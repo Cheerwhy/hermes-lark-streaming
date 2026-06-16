@@ -10,6 +10,8 @@ import yaml
 
 _HERMES_CONFIG_PATH = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "config.yaml"
 
+DEFAULT_DOMAIN = "https://open.feishu.cn"  # SDK 根域名，Larksuite 用 https://open.larksuite.com
+
 
 class Config:
     """插件配置，惰性读取 Hermes 主配置."""
@@ -55,7 +57,7 @@ class Config:
 
     @property
     def feishu_base_url(self) -> str:
-        return str(self._platform_cfg().get("base_url", "https://open.feishu.cn/open-apis"))
+        return str(self._platform_cfg().get("base_url", DEFAULT_DOMAIN))
 
     @property
     def card_duration_sec(self) -> int:
@@ -149,7 +151,7 @@ class Config:
                 "app_secret": self.env_app_secret,
                 "base_url": os.environ.get(
                     "FEISHU_BASE_URL",
-                    os.environ.get("LARK_BASE_URL", "https://open.feishu.cn/open-apis"),
+                    os.environ.get("LARK_BASE_URL", DEFAULT_DOMAIN),
                 ),
             }
         raw = self._load()
