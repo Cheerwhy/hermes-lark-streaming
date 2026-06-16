@@ -474,13 +474,14 @@ class StreamingController:
         assert segment_state is not None
         segments = segment_state.segments
         all_steps = session.tool_use.build_display_steps()
+        seal_start_idx = session.split_index
 
         if actions and not await self._do_batch_update(
             session, segments, actions, new_el_ids, new_el_estimates, updated_tool_segs,
         ):
             return False
 
-        seal_segments = [s for s in segments[:split_idx] if s.created]
+        seal_segments = [s for s in segments[seal_start_idx:split_idx] if s.created]
         if session.image_resolver:
             await _resolve_answer_images(
                 seal_segments,

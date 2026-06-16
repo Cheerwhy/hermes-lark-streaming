@@ -554,6 +554,35 @@ class TestDoFlush:
         assert [s.created for s in session.segment_state.segments] == [True, True, True]
 
     @pytest.mark.asyncio
+    async def test_second_split_seals_only_current_card_segments(self) -> None:
+        """多次拆卡时，seal 不应重复包含更早卡片上的 segments."""
+        ctrl = _setup_ctrl()
+        sealed_cards: list[dict] = []
+        ctrl._client.cardkit_create = AsyncMock(return_value="card_page_3")
+        ctrl._client.reply_card_by_id = AsyncMock(return_value="msg_page_3")
+        ctrl._client.cardkit_update = AsyncMock(
+            side_effect=lambda _card_id, card, **_kwargs: sealed_cards.append(card)
+        )
+
+        session = _make_session("msg_second_split")
+        session.state = SessionState.STREAMING
+        session.card_id = "card_page_2"
+        session.card_msg_id = "msg_page_2"
+        session.split_index = 2
+        for index in range(5):
+            seg = Segment("answer", f"answer_{index}")
+            seg.text = f"page content {index}"
+            seg.created = True
+            seg.dirty = False
+            session.segment_state.segments.append(seg)
+
+        assert await ctrl._do_split_card(session, 5, [], set(), {}, []) is True
+
+        contents = [element["content"] for element in sealed_cards[0]["body"]["elements"]]
+        assert contents == ["page content 2", "page content 3", "page content 4"]
+        assert session.split_index == 5
+
+    @pytest.mark.asyncio
     async def test_tool_growth_rolls_over_at_step_boundary(self) -> None:
         """同一个 tool segment 增长超阈值时，在 step 边界拆到新卡继续更新."""
         ctrl = _setup_ctrl()
