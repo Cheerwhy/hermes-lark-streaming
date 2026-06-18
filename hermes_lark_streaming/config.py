@@ -16,7 +16,9 @@ def hermes_home() -> Path:
     return Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
 
 
-_HERMES_CONFIG_PATH = hermes_home() / "config.yaml"
+def _config_path() -> Path:
+    """Hermes 主配置路径，惰性计算以响应运行时 HERMES_HOME 变化."""
+    return hermes_home() / "config.yaml"
 
 
 class Config:
@@ -170,8 +172,9 @@ class Config:
     def _load(self) -> dict[str, Any]:
         if self._raw is not None:
             return self._raw
-        if _HERMES_CONFIG_PATH.exists():
-            text = _HERMES_CONFIG_PATH.read_text(encoding="utf-8")
+        path = _config_path()
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
             self._raw = yaml.safe_load(text) or {}
         else:
             self._raw = {}
@@ -179,7 +182,8 @@ class Config:
 
     def _reload(self) -> dict[str, Any]:
         """从磁盘重新读取配置（不更新缓存），供运行时可变的配置项使用."""
-        if _HERMES_CONFIG_PATH.exists():
-            text = _HERMES_CONFIG_PATH.read_text(encoding="utf-8")
+        path = _config_path()
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
             return yaml.safe_load(text) or {}
         return {}

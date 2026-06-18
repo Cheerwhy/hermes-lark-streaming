@@ -131,6 +131,9 @@ def test_hermes_python_found_via_code_roots(
     """which hermes 不可用时，_code_roots 兜底命中 <code_root>/venv/bin/python3。"""
     # 屏蔽 which hermes，强制走兜底
     monkeypatch.setattr("hermes_lark_streaming.patcher.shutil.which", lambda _: None)
+    # 屏蔽系统级 root-mode 路径，避免 CI 机器命中真实安装
+    monkeypatch.setattr("hermes_lark_streaming.patcher._code_roots",
+                        lambda: [tmp_path / "hermes-agent"])
     py = tmp_path / "hermes-agent" / "venv" / "bin" / "python3"
     py.parent.mkdir(parents=True)
     py.write_text("#!/bin/sh\n")
@@ -141,6 +144,8 @@ def test_hermes_python_found_via_code_roots(
 def test_hermes_python_not_found(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """which hermes 和 _code_roots 都失败时返回 None。"""
     monkeypatch.setattr("hermes_lark_streaming.patcher.shutil.which", lambda _: None)
+    monkeypatch.setattr("hermes_lark_streaming.patcher._code_roots",
+                        lambda: [tmp_path / "hermes-agent"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert hermes_python() is None
 
@@ -185,6 +190,9 @@ def test_hermes_install_dir_falls_back_to_code_roots(
     """hermes_constants 不可用时（subprocess 失败），_code_roots 兜底命中含 gateway/run.py 的目录。"""
     # 让 hermes_python 返回一个不存在的 python（强制 subprocess 失败）
     monkeypatch.setattr("hermes_lark_streaming.patcher.shutil.which", lambda _: None)
+    # 屏蔽系统级 root-mode 路径，避免 CI 机器命中真实安装
+    monkeypatch.setattr("hermes_lark_streaming.patcher._code_roots",
+                        lambda: [tmp_path / "hermes-agent"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # 构造 <home>/hermes-agent/gateway/run.py
     run_py = tmp_path / "hermes-agent" / "gateway" / "run.py"
