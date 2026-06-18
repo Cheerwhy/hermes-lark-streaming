@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.0] - 2026-06-18
+
+### 新增
+
+- `status` 命令自动检测并展示 Hermes 的 Python 解释器路径与安装目录，并在 CLI 运行于非 Hermes 解释器时给出警告。(#73)
+- 新增 `INSTALL.md` 结构化安装指南（定位 Python → 安装 → 验证 → 配置凭据 → 注入 → 重启），覆盖 Feishu 与 Lark/Larksuite，供 AI agent 或人按步执行。
+- README 安装章节简化为指向 `INSTALL.md`，AI agent 的 curl 目标改为 `INSTALL.md`。(#73)
+
+### 变更
+
+- 以 `which hermes` 作为定位 Hermes 的主信号（解析 CLI wrapper 的 exec 行或 shebang 反推 venv Python），`_code_roots` 作为多候选根兜底，覆盖 per-user、root-mode（`/usr/local/lib/hermes-agent`）、自定义 `HERMES_HOME` 等安装布局。(#73)
+- 将 `HERMES_HOME` 解析收敛为 `config.hermes_home()` 单一来源，patcher 与 config 不再各自独立计算；运行时 `HERMES_HOME` 变化立即生效。(#73)
+
+### 修复
+
+- 修复标准布局下模块路径定位丢包名前缀的隐患（曾解析为 `hermes-agent/run.py` 而非 `hermes-agent/gateway/run.py`）。(#73)
+
+### Added
+
+- The `status` command now auto-detects and reports Hermes's Python interpreter path and install directory, warning when the CLI runs under a different interpreter. (#73)
+- New `INSTALL.md` structured installation guide (locate Python → install → verify → configure credentials → inject → restart), covering Feishu and Lark/Larksuite, designed for AI agents or humans to execute step by step.
+- README install sections simplified to point at `INSTALL.md`; the AI agent curl target changed to `INSTALL.md`. (#73)
+
+### Changed
+
+- Adopt `which hermes` as the primary signal for locating Hermes (parses the CLI wrapper's exec line or shebang to recover the venv Python), with `_code_roots` as a multi-candidate fallback covering per-user, root-mode (`/usr/local/lib/hermes-agent`), and custom `HERMES_HOME` layouts. (#73)
+- Consolidate `HERMES_HOME` resolution into a single `config.hermes_home()` source so the patcher and config no longer compute it independently; runtime `HERMES_HOME` changes take effect immediately. (#73)
+
+### Fixed
+
+- Fix a latent path-resolution bug where the standard layout dropped the package prefix (resolving to `hermes-agent/run.py` instead of `hermes-agent/gateway/run.py`). (#73)
+
+---
+
 ## [0.10.8] - 2026-06-18
 
 ### 修复
