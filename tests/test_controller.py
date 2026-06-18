@@ -21,6 +21,15 @@ def _enable(ctrl: StreamCardController) -> None:
         "streaming": {"enabled": True},
         "feishu": {"app_id": "app", "app_secret": "secret"},
     }
+    _set_cached_loop(ctrl)
+
+
+def _set_cached_loop(ctrl: StreamCardController) -> asyncio.AbstractEventLoop:
+    """为同步测试预置缓存的 event loop。"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    ctrl._loop = loop
+    return loop
 
 
 class _DummyFlush:

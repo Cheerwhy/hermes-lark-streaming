@@ -94,6 +94,17 @@ _CRON_PATH = _resolve_module_path(
 MK_CRON_DELIVER = f"# {PREFIX}_CRON_DELIVER_BEGIN"
 MK_CRON_DELIVER_END = f"# {PREFIX}_CRON_DELIVER_END"
 
+_ANCHOR_CHECKS: list[tuple[str, tuple[str, ...], str]] = [
+    ("Restart typing indicator so the user sees activity", (), "interrupt"),
+    ('was_interrupted = result.get("interrupted")', (), "queued follow-up boundary"),
+    ("return _preserve_queued_followup_history_offset(result, followup_result)", (), "queued follow-up return"),
+    ("agent.reasoning_config = reasoning_config", (), "reasoning_config"),
+    ("agent.background_review_callback = _bg_review_send", (), "background_review_callback"),
+    ("images, text_content = adapter.extract_images(response)", (), "background deliver"),
+    ("_already_sent = bool(", (), "complete"),
+    ("Discarding stale agent result", (), "abort"),
+]
+
 
 def _make_hook(indent: str, begin: str, end: str, body_lines: list[str]) -> str:
     return f"{indent}{begin}\n" + "".join(f"{indent}{line}\n" for line in body_lines) + f"{indent}{end}\n"
@@ -502,27 +513,11 @@ class Patcher:
                 f"Missing injection targets in run.py: {', '.join(missing)} — Hermes version may be incompatible"
             )
 
-        if "Restart typing indicator so the user sees activity" not in content:
-            raise PatcherError("Cannot find interrupt anchor in run.py — Hermes version may be incompatible")
-
-        if 'was_interrupted = result.get("interrupted")' not in content:
-            raise PatcherError("Cannot find queued follow-up boundary in run.py — Hermes version may be incompatible")
-
-        if "return _preserve_queued_followup_history_offset(result, followup_result)" not in content:
-            raise PatcherError("Cannot find queued follow-up return in run.py — Hermes version may be incompatible")
-
-        if "agent.reasoning_config = reasoning_config" not in content:
-            raise PatcherError("Cannot find reasoning_config anchor in run.py — Hermes version may be incompatible")
-
-        if "agent.background_review_callback = _bg_review_send" not in content:
-            raise PatcherError(
-                "Cannot find background_review_callback anchor in run.py — Hermes version may be incompatible"
-            )
-
-        if "images, text_content = adapter.extract_images(response)" not in content:
-            raise PatcherError(
-                "Cannot find background deliver anchor in run.py — Hermes version may be incompatible"
-            )
+        # 字符串锚点检查：primary 命中或任一 fallback 命中即可。
+        for primary, fallbacks, label in _ANCHOR_CHECKS:
+            if primary in content or any(fb in content for fb in fallbacks):
+                continue
+            raise PatcherError(f"Cannot find {label} anchor in run.py — Hermes version may be incompatible")
 
         normalize_site = _find_handle_message_source_site(tree, content.splitlines(keepends=True))
         if normalize_site is None:
@@ -586,9 +581,11 @@ class Patcher:
         sites: list[tuple[int, str, str]] = []
         for hook_fn_name, name, loc in hook_defs:
             if loc is None:
-                _logger.warning("Patcher: cannot find %s — hook skipped", name)
-            else:
-                sites.append((loc[0], loc[1], hook_fn_name))
+                # 定位失败硬失败，不静默跳过（防位置漂移致重复消息）
+                raise PatcherError(
+                    f"Cannot locate {name} injection site — Hermes version may be incompatible"
+                )
+            sites.append((loc[0], loc[1], hook_fn_name))
 
         sites.sort(key=lambda x: x[0], reverse=True)
         _HOOK_FNS = {
