@@ -17,7 +17,10 @@ from hermes_lark_streaming.patcher import (
     _code_roots,
     _default_cron_path,
     _default_run_path,
+    _python_from_hermes_cli,
     _resolve_module_path,
+    hermes_install_dir,
+    hermes_python,
 )
 
 
@@ -120,3 +123,71 @@ def test_explicit_path_bypasses_discovery(tmp_path: Path) -> None:
     run_py = tmp_path / "run.py"
     run_py.write_text("# stub\n")
     assert Patcher(run_path=run_py).run_path == run_py
+
+
+def test_hermes_python_found_via_code_roots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """which hermes 不可用时，_code_roots 兜底命中 <code_root>/venv/bin/python3。"""
+    # 屏蔽 which hermes，强制走兜底
+    monkeypatch.setattr("hermes_lark_streaming.patcher.shutil.which", lambda _: None)
+    py = tmp_path / "hermes-agent" / "venv" / "bin" / "python3"
+    py.parent.mkdir(parents=True)
+    py.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert hermes_python() == py
+
+
+def test_hermes_python_not_found(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """which hermes 和 _code_roots 都失败时返回 None。"""
+    monkeypatch.setattr("hermes_lark_streaming.patcher.shutil.which", lambda _: None)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert hermes_python() is None
+
+
+def test_python_from_hermes_cli_unix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unix: hermes 是 bash 脚本，解析 exec 行得到 venv/bin/python3。"""
+    venv_bin = tmp_path / "hermes-agent" / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python3").write_text("#!/bin/sh\n")
+    cli_script = tmp_path / "hermes"
+    cli_script.write_text(f'#!/usr/bin/env bash\nexec "{venv_bin / "hermes"}" "$@"\n')
+    monkeypatch.setattr("hermes_lark_streaming.patcher.shutil.which", lambda _: str(cli_script))
+    assert _python_from_hermes_cli() == venv_bin / "python3"
+
+
+def test_python_from_hermes_cli_console_scripts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """pip/console_scripts 安装: hermes 是 Python 脚本，shebang 直接指向 python3。"""
+    venv_bin = tmp_path / "hermes-agent" / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    py = venv_bin / "python3"
+    py.write_text("#!/bin/sh\n")
+    cli_script = tmp_path / "hermes"
+    # console_scripts 格式: 无 exec 行，shebang 是 python 路径
+    cli_script.write_text(f"#!{py}\n# -*- coding: utf-8 -*-\nimport sys\nfrom hermes_cli.main import main\n")
+    monkeypatch.setattr("hermes_lark_streaming.patcher.shutil.which", lambda _: str(cli_script))
+    assert _python_from_hermes_cli() == py
+
+
+def test_python_from_hermes_cli_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """hermes 不在 PATH 时返回 None。"""
+    monkeypatch.setattr("hermes_lark_streaming.patcher.shutil.which", lambda _: None)
+    assert _python_from_hermes_cli() is None
+
+
+def test_hermes_install_dir_falls_back_to_code_roots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """hermes_constants 不可用时（subprocess 失败），_code_roots 兜底命中含 gateway/run.py 的目录。"""
+    # 让 hermes_python 返回一个不存在的 python（强制 subprocess 失败）
+    monkeypatch.setattr("hermes_lark_streaming.patcher.shutil.which", lambda _: None)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # 构造 <home>/hermes-agent/gateway/run.py
+    run_py = tmp_path / "hermes-agent" / "gateway" / "run.py"
+    run_py.parent.mkdir(parents=True)
+    run_py.write_text("# stub\n")
+    assert hermes_install_dir() == (tmp_path / "hermes-agent").resolve()

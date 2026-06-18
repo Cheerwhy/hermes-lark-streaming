@@ -53,30 +53,14 @@ When long conversations or excessive tool steps cause the card to approach Feish
 
 ## Installation
 
-> **Note:** Hermes runs in its own Python venv. Install the plugin using Hermes's Python, or the gateway will fail to load it at runtime.
+For the full installation procedure see [INSTALL.md](INSTALL.md).
 
-### AI Agent
+### AI Agent install
 
-Tell your agent to read the README and follow the manual steps:
+Have the AI agent connected to Hermes read the installation guide and execute it:
 
 ```
-curl https://raw.githubusercontent.com/Cheerwhy/hermes-lark-streaming/main/README.md
-```
-
-### Manual
-
-> The plugin reads `HERMES_HOME` from Hermes to locate the installation path (default: `~/.hermes`). It also auto-discovers modules in `site-packages` for pip-installed Hermes — no manual path configuration needed.
-
-```bash
-git clone https://github.com/Cheerwhy/hermes-lark-streaming.git
-cd hermes-lark-streaming
-
-# Install into Hermes's venv so the gateway can load the plugin
-HERMES_PYTHON=~/.hermes/hermes-agent/venv/bin/python3
-$HERMES_PYTHON -m pip install -e .
-$HERMES_PYTHON -m hermes_lark_streaming verify   # Verify compatibility
-$HERMES_PYTHON -m hermes_lark_streaming install   # Inject hooks
-hermes gateway restart
+curl https://raw.githubusercontent.com/Cheerwhy/hermes-lark-streaming/main/INSTALL.md
 ```
 
 ---
@@ -154,7 +138,7 @@ $HERMES_PYTHON -m hermes_lark_streaming verify     # Verify compatibility (no fi
 $HERMES_PYTHON -m hermes_lark_streaming install    # Inject hooks
 $HERMES_PYTHON -m hermes_lark_streaming uninstall  # Remove hooks
 $HERMES_PYTHON -m hermes_lark_streaming restore    # Restore original files from backup
-$HERMES_PYTHON -m hermes_lark_streaming status     # Show status
+$HERMES_PYTHON -m hermes_lark_streaming status     # Show status (incl. Hermes Python/install dir detection)
 ```
 
 ---

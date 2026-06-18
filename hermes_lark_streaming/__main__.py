@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -181,6 +182,21 @@ def _cmd_status() -> int:
     cfg = Config()
     print(f"Config streaming.enabled: {cfg.enabled}")
     print(f"Feishu credentials: {'configured' if (cfg.env_app_id or cfg.feishu_app_id) else 'MISSING'}")
+
+    # Python interpreter check
+    from .patcher import hermes_install_dir, hermes_python
+
+    expected_py = hermes_python()
+    if expected_py is not None:
+        print(f"Hermes Python: {expected_py}")
+        current = Path(sys.executable).resolve()
+        if current != expected_py.resolve():
+            print(f"  warning: running under {current}, but Hermes uses {expected_py}")
+            print(f"  rerun commands with: {expected_py} -m hermes_lark_streaming ...")
+
+    install_dir = hermes_install_dir()
+    if install_dir is not None:
+        print(f"Hermes install dir: {install_dir}")
     return 0
 
 

@@ -53,30 +53,14 @@
 
 ## 安装
 
-> **注意：** Hermes 运行在独立的 Python 虚拟环境中，请使用 Hermes 的 Python 安装插件，否则 gateway 启动后会无法加载。
+完整安装步骤见 [INSTALL.md](INSTALL.md)。
 
-### AI Agent
+### AI Agent 安装
 
-让 Agent 读取 README 后按手动步骤操作：
+让 Hermes 对接的 AI agent 读取安装指南后自动执行：
 
 ```
-curl https://raw.githubusercontent.com/Cheerwhy/hermes-lark-streaming/main/README.md
-```
-
-### 手动安装
-
-> 插件会自动读取 Hermes 的 `HERMES_HOME` 环境变量定位安装路径（默认 `~/.hermes`），同时支持 pip 安装的 Hermes（自动发现 `site-packages` 中的模块），无需手动指定路径。
-
-```bash
-git clone https://github.com/Cheerwhy/hermes-lark-streaming.git
-cd hermes-lark-streaming
-
-# 安装到 Hermes 的 venv 中，确保 gateway 能加载插件
-HERMES_PYTHON=~/.hermes/hermes-agent/venv/bin/python3
-$HERMES_PYTHON -m pip install -e .
-$HERMES_PYTHON -m hermes_lark_streaming verify   # 验证兼容性
-$HERMES_PYTHON -m hermes_lark_streaming install   # 注入 hook
-hermes gateway restart
+curl https://raw.githubusercontent.com/Cheerwhy/hermes-lark-streaming/main/INSTALL.md
 ```
 
 ---
@@ -154,7 +138,7 @@ $HERMES_PYTHON -m hermes_lark_streaming verify     # 验证兼容性（不修改
 $HERMES_PYTHON -m hermes_lark_streaming install    # 注入 hook
 $HERMES_PYTHON -m hermes_lark_streaming uninstall  # 移除 hook
 $HERMES_PYTHON -m hermes_lark_streaming restore    # 从备份恢复原始文件
-$HERMES_PYTHON -m hermes_lark_streaming status     # 查看状态
+$HERMES_PYTHON -m hermes_lark_streaming status     # 查看状态（含 Hermes Python/安装目录检测）
 ```
 
 ---

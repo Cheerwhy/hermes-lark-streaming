@@ -7,7 +7,9 @@ import contextlib
 import importlib.util
 import logging
 import os
+import re
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -72,6 +74,85 @@ def _module_to_path(module_name: str) -> Path:
 # - root-mode (sudo curl|bash): /usr/local/lib/hermes-agent/
 def _code_roots() -> list[Path]:
     return [hermes_home() / "hermes-agent", Path("/usr/local/lib/hermes-agent")]
+
+
+# venv 内 python 解释器候选（覆盖 venv/.venv 命名变体）。
+_VENV_PYTHONS: tuple[tuple[str, ...], ...] = (
+    ("venv", "bin", "python3"),
+    ("venv", "bin", "python"),
+    (".venv", "bin", "python3"),
+    (".venv", "bin", "python"),
+)
+
+
+def _python_from_hermes_cli() -> Path | None:
+    """从 which hermes 反推 venv 内的 python3。"""
+    cli = shutil.which("hermes")
+    if cli is None:
+        return None
+    cli_path = Path(cli)
+    # 读脚本内容，依次试 exec 行(bash wrapper) 和 shebang(console_scripts)
+    try:
+        text = cli_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    # 1. bash wrapper: exec "venv/bin/hermes" → 同目录 python3
+    m = re.search(r'''exec\s+["']([^"']+)["']''', text)
+    if m:
+        venv_bin = Path(m.group(1)).parent  # venv/bin
+        for name in ("python3", "python"):
+            py = venv_bin / name
+            if py.exists():
+                return py
+    # 2. console_scripts: shebang #!/path/to/python3 直接指向 python
+    m = re.match(r'^#!\s*(\S+)', text)
+    if m:
+        py = Path(m.group(1))
+        if py.exists() and "python" in py.name.lower():
+            return py
+    return None
+
+
+def hermes_python() -> Path | None:
+    """定位 Hermes 的 Python: which hermes 优先, _code_roots 兜底."""
+    # 1. which hermes (覆盖所有官方安装方式，跨平台)
+    if py := _python_from_hermes_cli():
+        return py
+    # 2. 兜底: 已知代码根下的 venv
+    for root in _code_roots():
+        for parts in _VENV_PYTHONS:
+            py = root.joinpath(*parts)
+            if py.exists():
+                return py
+    return None
+
+
+def hermes_install_dir() -> Path | None:
+    """定位 Hermes 安装目录 (含 gateway/run.py): hermes_constants 优先, _code_roots 兜底."""
+    # 1. 用 Hermes Python 调用官方 API (single source of truth)
+    py = hermes_python()
+    if py is not None:
+        try:
+            result = subprocess.run(
+                [str(py), "-c", "from hermes_constants import get_hermes_home; print(get_hermes_home())"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            _logger.debug("hermes_constants lookup failed", exc_info=True)
+        else:
+            if result.returncode == 0:
+                home = Path(result.stdout.strip())
+                install = home / "hermes-agent"
+                if install.exists():
+                    return install
+    # 2. 兜底: _code_roots 里含 gateway/run.py 的那个
+    rel = _module_to_path("gateway.run")
+    for root in _code_roots():
+        if (root / rel).exists():
+            return root
+    return None
 
 
 def _resolve_module_path(module_name: str, roots: list[Path]) -> Path:
