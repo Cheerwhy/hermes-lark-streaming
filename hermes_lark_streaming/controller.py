@@ -72,12 +72,7 @@ class StreamCardController(StreamingController):
             pass
         if self._loop is not None and not self._loop.is_closed():
             return self._loop
-        try:
-            loop = asyncio.get_event_loop()
-            self._loop = loop
-            return loop
-        except RuntimeError:
-            return None
+        return None
 
     def _get_active_session(self, message_id: str) -> CardSession | None:
         """获取非终态的活跃 session，不存在或已终态返回 None."""

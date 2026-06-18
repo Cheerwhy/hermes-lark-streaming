@@ -19,6 +19,25 @@ def _make_async(**kwargs: object) -> FlushController:
     return FlushController(**kwargs)  # type: ignore[arg-type]
 
 
+class TestConstruction:
+    def test_explicit_loop_is_used_directly(self) -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            ctrl = FlushController(loop=loop)
+            assert ctrl._loop is loop
+        finally:
+            loop.close()
+
+    @pytest.mark.asyncio
+    async def test_without_loop_uses_running_loop(self) -> None:
+        ctrl = FlushController()
+        assert ctrl._loop is asyncio.get_running_loop()
+
+    def test_without_loop_in_sync_context_raises(self) -> None:
+        with pytest.raises(RuntimeError):
+            FlushController()
+
+
 class TestScheduleUpdate:
     @pytest.mark.asyncio
     async def test_first_call_schedules_delayed_flush(self) -> None:

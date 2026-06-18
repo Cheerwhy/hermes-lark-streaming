@@ -161,6 +161,55 @@ class TestVerify:
         with pytest.raises(PatcherError, match="reasoning_config"):
             _patcher(p).verify_target()
 
+    def test_verify_fails_on_missing_complete_anchor(self, tmp_path: Path) -> None:
+        """通过所有其他锚点，但缺 COMPLETE 锚点 `_already_sent = bool(`。"""
+        p = tmp_path / "run.py"
+        p.write_text(
+            textwrap.dedent("""\
+            async def _handle_message_with_agent(source, event):
+                self.hooks.emit("agent:end", {})
+            async def _stream_delta_cb(text):
+                pass
+            async def progress_callback(event_type):
+                pass
+            def _interim_assistant_cb(text):
+                pass
+            # Restart typing indicator so the user sees activity
+            was_interrupted = result.get("interrupted")
+            return _preserve_queued_followup_history_offset(result, followup_result)
+            agent.reasoning_config = reasoning_config
+            agent.background_review_callback = _bg_review_send
+            images, text_content = adapter.extract_images(response)
+        """)
+        )
+        with pytest.raises(PatcherError, match="complete anchor"):
+            _patcher(p).verify_target()
+
+    def test_verify_fails_on_missing_abort_anchor(self, tmp_path: Path) -> None:
+        """通过所有其他锚点，但缺 ABORT 锚点 `Discarding stale agent result`。"""
+        p = tmp_path / "run.py"
+        p.write_text(
+            textwrap.dedent("""\
+            async def _handle_message_with_agent(source, event):
+                self.hooks.emit("agent:end", {})
+            async def _stream_delta_cb(text):
+                pass
+            async def progress_callback(event_type):
+                pass
+            def _interim_assistant_cb(text):
+                pass
+            # Restart typing indicator so the user sees activity
+            was_interrupted = result.get("interrupted")
+            return _preserve_queued_followup_history_offset(result, followup_result)
+            agent.reasoning_config = reasoning_config
+            agent.background_review_callback = _bg_review_send
+            images, text_content = adapter.extract_images(response)
+            _already_sent = bool(agent_result.get("already_sent"))
+        """)
+        )
+        with pytest.raises(PatcherError, match="abort anchor"):
+            _patcher(p).verify_target()
+
 
 class TestApplyRemove:
     def test_apply_injects_all_markers(self, run_copy: Path) -> None:
@@ -232,6 +281,14 @@ class TestApplyRemove:
 
         assert upgraded.count(begin) == 1
         assert upgraded.count(end) == 1
+
+    def test_apply_hard_fails_when_injection_site_missing(self, run_copy: Path) -> None:
+        patcher = _patcher(run_copy)
+        with (
+            patch("hermes_lark_streaming.patcher._find_handler_return", return_value=None),
+            pytest.raises(PatcherError, match="locate complete injection site"),
+        ):
+            patcher.apply()
 
     def test_remove_restores_markers_free(self, run_copy: Path) -> None:
         patcher = _patcher(run_copy)

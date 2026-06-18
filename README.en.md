@@ -43,7 +43,7 @@ When long conversations or excessive tool steps cause the card to approach Feish
 
 ## Requirements
 
-- Hermes `>= 0.11.0` (2026.4.23) with Feishu/Lark platform configured
+- Hermes `>= 0.14.0` (2026.5.16) with Feishu/Lark platform configured
 - `Python >= 3.11`
 - `lark-oapi >= 1.4.0` — Feishu/Lark official Python SDK
 - `PyYAML >= 6.0` — YAML parser

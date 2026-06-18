@@ -78,7 +78,7 @@ class CardSession:
         self.card_msg_id: str | None = None
         self.card_id: str | None = None
         self.tool_use = ToolUseTracker()
-        self.flush = FlushController(throttle_ms=CARDKIT_MS)
+        self.flush = FlushController(throttle_ms=CARDKIT_MS, loop=loop)
         self.footer: dict[str, Any] = {}
         self.sequence = 1
         self._loop = loop
