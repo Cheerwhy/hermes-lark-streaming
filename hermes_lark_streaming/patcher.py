@@ -11,6 +11,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from .config import hermes_home
+
 _logger = logging.getLogger("hermes_lark_streaming")
 
 
@@ -49,8 +51,6 @@ MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[12]
 
 _BACKUP_SUFFIX = ".hermes_lark.bak"
 
-_HERMES_HOME = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
-
 
 def _valid_source(path: Path) -> Path | None:
     try:
@@ -62,34 +62,47 @@ def _valid_source(path: Path) -> Path | None:
     return None
 
 
-def _resolve_module_path(module_name: str, hardcoded: Path) -> Path:
-    """Discover the actual file path of a Hermes module.
+def _module_to_path(module_name: str) -> Path:
+    """gateway.run → gateway/run.py."""
+    return Path(*module_name.split(".")).with_suffix(".py")
 
-    Uses the standard Hermes home layout when available, then falls back to
-    module discovery for pip-install scenarios without importing parent packages.
-    """
-    if candidate := _valid_source(hardcoded):
-        return candidate
 
+# 候选代码根目录，按优先级排列（来源: Hermes 官方安装文档 Install Layout）。
+# - per-user git installer: <HERMES_HOME>/hermes-agent/
+# - root-mode (sudo curl|bash): /usr/local/lib/hermes-agent/
+def _code_roots() -> list[Path]:
+    return [hermes_home() / "hermes-agent", Path("/usr/local/lib/hermes-agent")]
+
+
+def _resolve_module_path(module_name: str, roots: list[Path]) -> Path:
+    """定位 Hermes 模块文件，候选代码根优先，importlib 兜底."""
+    rel = _module_to_path(module_name)
+    for root in roots:
+        if candidate := _valid_source(root / rel):
+            return candidate
+
+    package = module_name.partition(".")[0]
     try:
-        package_name, _, relative_name = module_name.partition(".")
-        spec = importlib.util.find_spec(package_name)
-        if spec and spec.submodule_search_locations:
-            relative_path = Path(*relative_name.split(".")).with_suffix(".py")
-            for location in spec.submodule_search_locations:
-                if candidate := _valid_source(Path(location) / relative_path):
-                    return candidate
+        spec = importlib.util.find_spec(package)
+        locations = spec.submodule_search_locations if spec else None
+        # submodule_search_locations 指向包目录（如 .../gateway），
+        # 因此需剥掉包名前缀，得到包内子路径。
+        in_pkg = rel.relative_to(Path(package)) if rel.parts[0] == package else rel
+        for location in locations or []:
+            if candidate := _valid_source(Path(location) / in_pkg):
+                return candidate
     except Exception:
         _logger.debug("Failed to resolve Hermes module %s", module_name, exc_info=True)
-    return hardcoded
+    return roots[0] / rel if roots else rel
 
 
-_RUN_PATH = _resolve_module_path(
-    "gateway.run", _HERMES_HOME / "hermes-agent" / "gateway" / "run.py"
-)
-_CRON_PATH = _resolve_module_path(
-    "cron.scheduler", _HERMES_HOME / "hermes-agent" / "cron" / "scheduler.py"
-)
+def _default_run_path() -> Path:
+    return _resolve_module_path("gateway.run", _code_roots())
+
+
+def _default_cron_path() -> Path:
+    return _resolve_module_path("cron.scheduler", _code_roots())
+
 
 MK_CRON_DELIVER = f"# {PREFIX}_CRON_DELIVER_BEGIN"
 MK_CRON_DELIVER_END = f"# {PREFIX}_CRON_DELIVER_END"
@@ -461,10 +474,15 @@ class Patcher:
 
     MARKERS: list[tuple[str, str]] = MARKERS
 
-    def __init__(self, run_path: Path = _RUN_PATH) -> None:
-        self.run_path = run_path
-        if not run_path.exists():
-            raise PatcherError(f"run.py not found: {run_path}")
+    def __init__(self, run_path: Path | None = None) -> None:
+        self.run_path = run_path or _default_run_path()
+        if not self.run_path.exists():
+            tried = ", ".join(str(r) for r in _code_roots())
+            raise PatcherError(
+                f"gateway/run.py not found: {self.run_path} "
+                f"(tried: {tried}). "
+                f"Set HERMES_HOME to the dir containing hermes-agent/ and rerun."
+            )
 
     def is_patched(self) -> bool:
         return MK_START in self.run_path.read_text(encoding="utf-8")
@@ -741,10 +759,15 @@ def _safe_indent(lines: list[str], lineno: int) -> str:
 class CronPatcher:
     """注入 CRON_DELIVER hook 到 cron/scheduler.py 的 _deliver_result."""
 
-    def __init__(self, cron_path: Path = _CRON_PATH) -> None:
-        self.cron_path = cron_path
-        if not cron_path.exists():
-            raise PatcherError(f"scheduler.py not found: {cron_path}")
+    def __init__(self, cron_path: Path | None = None) -> None:
+        self.cron_path = cron_path or _default_cron_path()
+        if not self.cron_path.exists():
+            tried = ", ".join(str(r) for r in _code_roots())
+            raise PatcherError(
+                f"cron/scheduler.py not found: {self.cron_path} "
+                f"(tried: {tried}). "
+                f"Set HERMES_HOME to the dir containing hermes-agent/ and rerun."
+            )
 
     def is_patched(self) -> bool:
         return MK_CRON_DELIVER in self.cron_path.read_text(encoding="utf-8")

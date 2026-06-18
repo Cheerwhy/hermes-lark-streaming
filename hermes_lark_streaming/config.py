@@ -8,9 +8,15 @@ from typing import Any
 
 import yaml
 
-_HERMES_CONFIG_PATH = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "config.yaml"
-
 DEFAULT_DOMAIN = "https://open.feishu.cn"  # SDK 根域名，Larksuite 用 https://open.larksuite.com
+
+
+def hermes_home() -> Path:
+    """Hermes 主目录，优先级 HERMES_HOME 环境变量 → ~/.hermes."""
+    return Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+
+
+_HERMES_CONFIG_PATH = hermes_home() / "config.yaml"
 
 
 class Config:
