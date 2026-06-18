@@ -43,6 +43,7 @@ jobs:
         id: verify
         continue-on-error: true
         run: |
+          set +e
           python -c "
           import pathlib
           from hermes_lark_streaming.patcher import Patcher, CronPatcher
@@ -51,16 +52,29 @@ jobs:
           cp = CronPatcher(pathlib.Path('hermes_scheduler.py'))
           cp.verify_target()
           print('Both targets compatible.')
-          "
+          " > /tmp/verify.log 2>&1
+          code=$?
+          {
+            echo "exit=${code}"
+            if [ -s /tmp/verify.log ]; then
+              echo "log<<VERIFY_EOF"
+              cat /tmp/verify.log
+              echo "VERIFY_EOF"
+            fi
+          } >> "$GITHUB_OUTPUT"
 
       - name: Open issue on failure
-        if: steps.verify.outcome == 'failure'
+        if: always() && steps.verify.outcome != 'success'
         uses: actions/github-script@v7
+        env:
+          VERIFY_LOG: ${{ steps.verify.outputs.log }}
         with:
           script: |
             const label = 'hermes-compat';
             const title = 'Hermes compatibility check failed';
-            const body = `The daily Hermes compatibility check failed.\n\nPlease check if Hermes has updated function names or injection anchors in \`gateway/run.py\` or \`cron/scheduler.py\`.\n\nWorkflow run: ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const log = process.env.VERIFY_LOG || '(no output captured — verify step may have been skipped, e.g. upstream fetch / install failure)';
+            const run = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const body = `The Hermes compatibility check failed.\n\nPlease check if Hermes has updated function names or injection anchors in \`gateway/run.py\` or \`cron/scheduler.py\`.\n\n<details><summary>verify output</summary>\n\n\`\`\`\n${log}\n\`\`\`\n\n</details>\n\nWorkflow run: ${run}`;
 
             // Ensure label exists
             try {
@@ -90,3 +104,7 @@ jobs:
                 labels: [label],
               });
             }
+
+      - name: Fail job on compatibility break
+        if: always() && steps.verify.outcome != 'success'
+        run: exit 1
