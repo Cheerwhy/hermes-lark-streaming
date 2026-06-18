@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.8] - 2026-06-18
+
+### 修复
+
+- 修复自托管 / 国际版（Larksuite）场景下 `base_url` 配置不生效的问题，请求现在正确路由到自定义域名。(#69)
+- 修复多次拆卡时分片密封计数异常的问题。(#67)
+
+### Fixed
+
+- Fix `base_url` config being ignored for self-hosted / Larksuite (international) deployments; requests now route to the configured domain. (#69)
+- Fix incorrect segment sealing count during multi-split card rollover. (#67)
+
+---
+
 ## [0.10.5] - 2026-06-10
 
 ### 新增
