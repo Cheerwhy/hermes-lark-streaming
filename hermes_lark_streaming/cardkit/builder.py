@@ -371,7 +371,55 @@ def _render_footer_field(
             return val, val
         return None, None
 
+    if name == "balance":
+        model = (data.get("model") or "").strip()
+        if model:
+            balances = _load_balance_cache()
+            bal_str = _match_platform_balance(balances, model)
+            if bal_str:
+                val = f"💰 {bal_str}·{model}"
+                return val, val
+        return None, None
+
     return None, None
+
+
+def _load_balance_cache() -> list[dict]:
+    """~/.hermes/data/balance-cache.json 读取各平台余额."""
+    try:
+        import json, os
+        path = os.path.expanduser("~/.hermes/data/balance-cache.json")
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            data = json.load(f)
+        return data.get("results", [])
+    except Exception:
+        return []
+
+
+def _match_platform_balance(balances: list[dict], model: str) -> str | None:
+    """按模型名匹配平台余额 → 'DeepSeek·¥749.40' 或 None."""
+    if not model or not balances:
+        return None
+    ml = model.lower()
+    candidates = []
+    if "deepseek" in ml:
+        candidates = [b for b in balances if b.get("platform") == "DeepSeek"]
+    elif "qwen" in ml or "bailian" in ml or "tongyi" in ml:
+        candidates = [b for b in balances if "阿里" in b.get("platform", "")]
+    elif "silicon" in ml or "glm" in ml or "zhipu" in ml:
+        candidates = [b for b in balances if "硅基" in b.get("platform", "")]
+    elif "doubao" in ml or "volc" in ml or "huoshan" in ml:
+        candidates = [b for b in balances if "火山" in b.get("platform", "")]
+    if not candidates and balances:
+        candidates = [balances[0]]
+    if candidates:
+        b = candidates[0]
+        total = float(b.get("total", 0))
+        platform = b.get("platform", "Unknown")
+        return f"{platform}·¥{total:.2f}"
+    return None
 
 
 def _compact(n: int) -> str:
