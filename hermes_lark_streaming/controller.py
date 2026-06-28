@@ -16,6 +16,7 @@ from .feishu import (
     FeishuClientConfig,
 )
 from .streaming.controller import StreamingController
+from .streaming.interaction import build_interaction_card, classify_message
 from .streaming.segments import SegmentType
 from .streaming.session import CardSession, SessionState
 from .streaming.text import strip_reasoning_tags
@@ -63,116 +64,100 @@ class StreamCardController(StreamingController):
             self._initialized = True
 
     def _get_loop(self) -> asyncio.AbstractEventLoop | None:
-        """获取事件循环，缓存以便跨线程复用."""
+        if self._loop is not None:
+            return self._loop
         try:
-            loop = asyncio.get_running_loop()
-            self._loop = loop
-            return loop
+            self._loop = asyncio.get_running_loop()
         except RuntimeError:
             pass
-        if self._loop is not None and not self._loop.is_closed():
-            return self._loop
-        return None
-
-    def _get_active_session(self, message_id: str) -> CardSession | None:
-        """获取非终态的活跃 session，不存在或已终态返回 None."""
-        session = self._sessions.get(message_id)
-        if session is None or session.state.is_terminal:
-            return None
-        return session
+        return self._loop
 
     def _fire_and_forget(
-        self,
-        coro: Coroutine[Any, Any, Any],
-        loop: asyncio.AbstractEventLoop,
-    ) -> asyncio.Future[Any] | ConcurrentFuture | None:
-        try:
-            task = loop.create_task(coro)
+        self, coro: Coroutine[Any, Any, Any], loop: asyncio.AbstractEventLoop | None = None
+    ) -> asyncio.Future[Any] | ConcurrentFuture:
+        if loop is None:
+            loop = self._get_loop()
+        if loop is not None and loop.is_running():
+            task = asyncio.ensure_future(coro, loop=loop)
             task.add_done_callback(self._on_bg_task_done)
             return task
-        except RuntimeError:
-            try:
-                fut = asyncio.run_coroutine_threadsafe(coro, loop)
-                fut.add_done_callback(self._on_bg_task_done)
-                return fut
-            except Exception:
-                _logger.debug("fire_and_forget failed", exc_info=True)
-                return None
+        fut: ConcurrentFuture = ConcurrentFuture()
+        threading.Thread(target=lambda: self._run_in_thread(coro, fut), daemon=True).start()
+        return fut
+
+    @staticmethod
+    def _run_in_thread(coro: Coroutine[Any, Any, Any], fut: ConcurrentFuture) -> None:
+        try:
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            result = new_loop.run_until_complete(coro)
+            fut.set_result(result)
+        except Exception as exc:
+            fut.set_exception(exc)
+        finally:
+            new_loop.close()
 
     def on_message_started(
         self,
         *,
-        message_id: str | None,
+        message_id: str,
         chat_id: str,
         anchor_id: str | None = None,
     ) -> None:
-        """消息处理开始 — 创建会话 + 发占位卡片."""
         if not self.enabled:
             return
-        if not message_id:
+        if not message_id or not chat_id:
             _logger.warning("on_message_started: missing message_id, chat=%s", chat_id[:12])
             return
-        if message_id in self._sessions:
-            return
-
         self._prune_stale_sessions()
-
         loop = self._get_loop()
         if loop is None:
-            _logger.warning("no event loop available, skipping: msg=%s", message_id[:12])
             return
+        self._ensure_init_sync()
         session = CardSession(message_id, chat_id, loop)
-        self._sessions[message_id] = session
         if anchor_id and anchor_id != message_id:
             session.anchor_id = anchor_id
             self._sessions[anchor_id] = session
+        self._sessions[message_id] = session
         _logger.info("session created: msg=%s chat=%s anchor=%s", message_id[:12], chat_id[:12], (anchor_id or "")[:12])
-
         session.create_task = self._fire_and_forget(self._do_create_card(session), loop)
 
-    def _mark_text_fallback_needed(self, session: CardSession) -> None:
-        keys = {session.message_id}
-        if session.anchor_id:
-            keys.add(session.anchor_id)
-        self._text_fallback_needed.update(keys)
-        for key in keys:
-            self._text_fallback_aliases[key] = set(keys)
-
-    def consume_text_fallback(self, message_id: str) -> bool:
-        """Return whether gateway should undo already_sent and deliver plain text."""
-        if message_id not in self._text_fallback_needed:
-            return False
-        keys = self._text_fallback_aliases.pop(message_id, {message_id})
-        for key in keys:
-            self._text_fallback_needed.discard(key)
-            self._text_fallback_aliases.pop(key, None)
-        return True
+    def _ensure_init_sync(self) -> None:
+        if self._initialized:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            self._fire_and_forget(self._ensure_init(), loop)
+        else:
+            import asyncio as _asyncio
+            try:
+                _asyncio.run(self._ensure_init())
+            except Exception:
+                _logger.debug("sync init failed", exc_info=True)
 
     def on_thinking(self, *, message_id: str, text: str) -> bool:
-        """思考内容增量."""
         if not self.enabled:
             return False
         session = self._get_active_session(message_id)
         if session is None or session.guard.should_skip("on_thinking"):
             return False
-
         if session.segment_state is None:
             return False
-        return self._on_thinking_segment(session, text)
+        session.segment_state.on_reasoning_delta(text)
+        self._schedule_flush(session)
+        return True
 
     def on_reasoning(self, *, message_id: str, text: str) -> bool:
-        """Native model reasoning delta (incremental append)."""
         if not self.enabled:
-            return False
-        if not self._cfg.show_reasoning:
             return False
         session = self._get_active_session(message_id)
         if session is None or session.guard.should_skip("on_reasoning"):
             return False
-
         if session.segment_state is None:
             return False
-
         session.segment_state.on_reasoning_delta(text)
         self._schedule_flush(session)
         return True
@@ -181,21 +166,20 @@ class StreamCardController(StreamingController):
         self,
         *,
         message_id: str,
-        tool_name: str,
-        status: str,
+        tool_name: str = "",
+        status: str = "started",
         detail: str = "",
     ) -> bool:
-        """工具调用事件."""
         if not self.enabled:
             return False
         session = self._get_active_session(message_id)
         if session is None or session.guard.should_skip("on_tool_update"):
             return False
-        if session.segment_state is None:
+        if session.tool_use is None:
             return False
 
-        if status in ("running", "started", "tool.started"):
-            session.tool_use.record_start(tool_name, detail)
+        if status == "started":
+            session.tool_use.record_start(tool_name)
         else:
             is_error = status in ("error", "failed")
             session.tool_use.record_end(
@@ -336,7 +320,16 @@ class StreamCardController(StreamingController):
             context=context,
         )
 
-        return await self._complete_session_wait(session)
+        sent = await self._complete_session_wait(session)
+
+        # ── interaction card: detect clarify/approval and send standalone card ──
+        if sent and answer:
+            self._fire_and_forget(
+                self._maybe_send_interaction_card(session, answer),
+                session._loop,
+            )
+
+        return sent
 
     def on_cron_deliver(
         self,
@@ -419,6 +412,43 @@ class StreamCardController(StreamingController):
             except Exception:
                 _logger.debug("background review sender failed", exc_info=True)
 
+    # ── interaction card support ──────────────────────────────────────
+
+    async def _maybe_send_interaction_card(self, session: CardSession, answer: str) -> None:
+        """Detect clarify/approval messages and send a standalone interaction card."""
+        info = classify_message(answer)
+        if info is None:
+            return
+
+        try:
+            await self._ensure_init()
+        except RuntimeError:
+            return
+
+        if self._client is None:
+            return
+
+        try:
+            card = build_interaction_card(
+                interaction_type=info["type"],
+                question=info["question"],
+                options=info["options"],
+                is_danger=info.get("is_danger", False),
+            )
+            await self._client.send_card_to_chat(
+                chat_id=session.chat_id,
+                card=card,
+            )
+            _logger.info(
+                "interaction card sent: msg=%s type=%s",
+                session.message_id[:12],
+                info["type"],
+            )
+        except Exception:
+            _logger.debug("interaction card send failed", exc_info=True)
+
+    # ── internal helpers ───────────────────────────────────────────────
+
     def _cleanup(self, message_id: str) -> None:
         session = self._sessions.pop(message_id, None)
         if session is None:
@@ -496,10 +526,10 @@ class StreamCardController(StreamingController):
         session.footer = {
             "duration": duration,
             "model": model,
-            **({"input_tokens": tokens.get("input_tokens")} if tokens else {}),
-            **({"output_tokens": tokens.get("output_tokens")} if tokens else {}),
-            **({"context_used": context.get("used_tokens")} if context else {}),
-            **({"context_max": context.get("max_tokens")} if context else {}),
+            **( {"input_tokens": tokens.get("input_tokens")} if tokens else {}),
+            **( {"output_tokens": tokens.get("output_tokens")} if tokens else {}),
+            **( {"context_used": context.get("used_tokens")} if context else {}),
+            **( {"context_max": context.get("max_tokens")} if context else {}),
         }
 
     def _complete_session(self, session: CardSession) -> None:
@@ -527,6 +557,31 @@ class StreamCardController(StreamingController):
             return
         except Exception:
             _logger.warning("background task failed", exc_info=True)
+
+    # Forward to StreamingController base
+    def _do_create_card(self, session: CardSession) -> Coroutine[Any, Any, None]:
+        return StreamingController._do_create_card(self, session)
+
+    def _do_complete_card(self, session: CardSession) -> Coroutine[Any, Any, bool]:
+        return StreamingController._do_complete_card(self, session)
+
+    def _do_cron_deliver(self, chat_id: str, content: str, **kw: Any) -> Coroutine[Any, Any, None]:
+        return StreamingController._do_cron_deliver(self, chat_id, content, **kw)
+
+    def _do_background_deliver(self, chat_id: str, preview: str, content: str, **kw: Any) -> Coroutine[Any, Any, None]:
+        return StreamingController._do_background_deliver(self, chat_id, preview, content, **kw)
+
+    def _get_active_session(self, message_id: str) -> CardSession | None:
+        return StreamingController._get_active_session(self, message_id)
+
+    def _schedule_flush(self, session: CardSession) -> None:
+        return StreamingController._schedule_flush(self, session)
+
+    def consume_text_fallback(self, message_id: str) -> bool:
+        return StreamingController.consume_text_fallback(self, message_id)
+
+    def _mark_text_fallback_needed(self, session: CardSession) -> None:
+        return StreamingController._mark_text_fallback_needed(self, session)
 
 
 _controller: StreamCardController | None = None

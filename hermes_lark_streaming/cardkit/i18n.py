@@ -26,6 +26,16 @@ _T: dict[str, tuple[str, str]] = {
     "thinking_panel": ("Thinking", "思考中"),
     "thought_for": ("Thought for {}", "思考了 {}"),
     "done": ("Done.", "完成。"),
+    # interaction cards
+    "interaction_reply_hint": (
+        "Reply with the option number (e.g. 1, 2, 3).",
+        "请回复数字选择（如 1、2、3）。",
+    ),
+    "interaction_clarify_header": ("❓ Clarification", "❓ 需要确认"),
+    "interaction_approval_header": ("🔐 Approval Required", "🔐 需要授权"),
+    "interaction_danger_header": ("⚠️ Approval Required", "⚠️ 需要授权"),
+    "interaction_approve": ("✅ Approve", "✅ 同意"),
+    "interaction_deny": ("❌ Deny", "❌ 拒绝"),
 }
 
 
