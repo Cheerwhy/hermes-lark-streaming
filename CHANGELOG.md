@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.2] - 2026-07-01
+
+### 修复
+
+- 修复 Telegram 消息重复发送两遍的问题。(#76)
+- 修复长回答 / 多工具调用时 CardKit `300313` 报错死循环、卡片卡住并回退纯文本的问题。(#49, #63)
+
+### Fixed
+
+- Fix Telegram messages being delivered twice. (#76)
+- Fix the CardKit `300313` death-loop that froze the card and fell back to plain text on long answers / many tool calls. (#49, #63)
+
 ## [0.11.0] - 2026-06-18
 
 ### 新增
