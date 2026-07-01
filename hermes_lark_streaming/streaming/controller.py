@@ -402,6 +402,23 @@ class StreamingController:
                 action_summary,
                 exc_info=True,
             )
+            # 缺失元素（300313）时回滚 stale segment：本地 created=True 但卡片上不存在，
+            # 下一轮 flush 会用 add_elements 重建该元素，避免反复 partial_update 死循环。
+            if missing_el_id:
+                for seg in segments[session.split_index:]:
+                    if seg.el_id == missing_el_id and seg.created:
+                        seg.created = False
+                        seg.dirty = True
+                        # 同步扣减元素计数：该 segment 当初 add 成功时已累加进 element_count，
+                        # 回滚为未创建后下一轮会重新 add 并再次累加，这里先扣除避免重复计数。
+                        session.element_count -= seg.element_estimate
+                        if session.element_count < 0:
+                            session.element_count = 0
+                        _logger.info(
+                            "CardKit recovered stale segment %s -> will re-add on next flush",
+                            seg.el_id,
+                        )
+                        break
             self._handle_flush_error(e)
             return False
         return True

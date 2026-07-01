@@ -792,6 +792,59 @@ class TestDoFlush:
         assert session.segment_state.segments[-1].created is True
 
     @pytest.mark.asyncio
+    async def test_batch_update_recovers_stale_segment_on_missing_element(self) -> None:
+        """300313 (not find elementID) 后回滚 stale segment，下一轮 flush 走 add 重建，不再死循环."""
+        ctrl = _setup_ctrl()
+        client = ctrl._client
+
+        session = _make_session("msg_stale")
+        session.state = SessionState.STREAMING
+        session.card_id = "card_stale"
+        session.card_msg_id = "msg_stale_card"
+        # 一个已创建的 tool segment（本地 created=True，但模拟卡片上已不存在）
+        session.tool_use.record_start("read", "file0")
+        session.segment_state.on_tool_event(1)
+        tool_seg = session.segment_state.segments[0]
+        tool_seg.created = True
+        tool_seg.element_estimate = estimate_segment_elements(tool_seg, session.tool_use.build_display_steps())
+        session.element_count = tool_seg.element_estimate
+        ctrl._sessions["msg_stale"] = session
+
+        stale_el_id = tool_seg.el_id
+        # 第一次 batch_update 抛 300313 — 引用了卡片上不存在的 el_id
+        client.cardkit_batch_update = AsyncMock(
+            side_effect=[
+                FeishuAPIError(
+                    f"cardkit_batch_update: code=300313, msg=ErrMsg: not find elementID : {stale_el_id};",
+                    300313,
+                ),
+                None,
+            ]
+        )
+
+        # 新增 tool step 触发 dirty → flush 走 partial_update 分支 → 300313
+        session.tool_use.record_start("read", "file1")
+        session.segment_state.on_tool_event(len(session.tool_use.build_display_steps()))
+
+        await ctrl._do_flush(session)
+
+        # 回滚：stale segment 被标记为未创建 + 脏，等下一轮重建
+        assert tool_seg.created is False
+        assert tool_seg.dirty is True
+        # element_count 同步扣减（避免下一轮 add 重复累加导致阈值虚高、误触发拆分）
+        assert session.element_count == 0
+
+        # 第二次 flush：走 add_elements 重建，batch_update 成功
+        await ctrl._do_flush(session)
+
+        assert tool_seg.created is True
+        # 重建后 element_count = 当前 tool steps（2 个）的新估算值，无重复计数
+        expected = estimate_segment_elements(tool_seg, session.tool_use.build_display_steps())
+        assert session.element_count == expected
+        # 两次 batch_update 调用：第一次失败，第二次成功（非死循环重试 N 次）
+        assert client.cardkit_batch_update.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_reasoning_finalized_snapshot(self) -> None:
         ctrl = _setup_ctrl()
         session = _make_session("msg_snap")
