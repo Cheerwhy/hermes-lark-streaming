@@ -132,6 +132,24 @@ class TestCardDurationSec:
         assert cfg.card_duration_sec == 600
 
 
+class TestWidthMode:
+    def test_default_when_missing(self) -> None:
+        cfg = _make_config({"streaming": {}})
+        assert cfg.width_mode == "default"
+
+    def test_reads_valid_value(self) -> None:
+        cfg = _make_config({"streaming": {"width_mode": "compact"}})
+        assert cfg.width_mode == "compact"
+
+    def test_reads_case_insensitive(self) -> None:
+        cfg = _make_config({"streaming": {"width_mode": "FILL"}})
+        assert cfg.width_mode == "fill"
+
+    def test_invalid_falls_back_to_default(self) -> None:
+        cfg = _make_config({"streaming": {"width_mode": "wide"}})
+        assert cfg.width_mode == "default"
+
+
 class TestFeishuAppId:
     def test_from_env(self) -> None:
         cfg = _make_config({})

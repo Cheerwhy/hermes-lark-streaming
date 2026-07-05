@@ -131,6 +131,14 @@ class Config:
         return str(body.get("text_size", "normal_v2")) or "normal_v2"
 
     @property
+    def width_mode(self) -> str:
+        """Card 宽度模式: default / compact / fill."""
+        raw = str(self._streaming_sec().get("width_mode", "default") or "default").strip().lower()
+        if raw in {"default", "compact", "fill"}:
+            return raw
+        return "default"
+
+    @property
     def footer_text_size(self) -> str:
         """Footer markdown 的文字大小."""
         sec = self._streaming_sec()

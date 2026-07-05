@@ -115,6 +115,7 @@ class StreamingController:
                 show_streaming_element=False,
                 header_enabled=self._cfg.header_enabled,
                 text_size=self._cfg.body_text_size,
+                width_mode=self._cfg.width_mode,
             )
             card_id = await self._client.cardkit_create(card)
             try:
@@ -540,6 +541,7 @@ class StreamingController:
             header_enabled=False,
             body_text_size=self._cfg.body_text_size,
             show_tool_use=self._cfg.show_tool_use,
+            width_mode=self._cfg.width_mode,
         )
 
         try:
@@ -549,6 +551,7 @@ class StreamingController:
                 show_streaming_element=False,
                 header_enabled=self._cfg.header_enabled,
                 text_size=self._cfg.body_text_size,
+                width_mode=self._cfg.width_mode,
             )
             new_card_id = await self._client.cardkit_create(card)
             new_msg_id = await self._client.reply_card_by_id(session.anchor_id or session.message_id, new_card_id)
@@ -646,6 +649,7 @@ class StreamingController:
             header_enabled=self._cfg.header_enabled,
             body_text_size=self._cfg.body_text_size,
             show_tool_use=self._cfg.show_tool_use,
+            width_mode=self._cfg.width_mode,
         )
 
         streaming_closed = False

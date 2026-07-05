@@ -95,6 +95,7 @@ Customize the appearance of streaming and completion cards with the following op
 ```yaml
 streaming:
   enabled: true
+  width_mode: default   # Card width mode: default / compact / fill, default default
   header:
     enabled: true      # Card header, default false
   body:
@@ -127,6 +128,8 @@ streaming:
 **Show Label** (`footer.show_label`): Whether to display field labels like "Elapsed", "Context". Default: `false`.
 
 **Panel Expand** (`panel_expanded`): Reasoning and tool panels are collapsed by default in completion cards. Set to `true` to keep them expanded.
+
+**Card Width** (`streaming.width_mode`): Controls card width mode. Allowed values: `default`, `compact`, `fill`. Default: `default`.
 
 ---
 

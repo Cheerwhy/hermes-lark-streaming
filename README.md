@@ -95,6 +95,7 @@ FEISHU_APP_SECRET=xxxxx
 ```yaml
 streaming:
   enabled: true
+  width_mode: default   # 卡片宽度模式：default / compact / fill，默认 default
   header:
     enabled: true      # 卡片 header，默认 false
   body:
@@ -127,6 +128,8 @@ streaming:
 **显示标签**（`footer.show_label`）：是否展示字段标签（如 "Elapsed"、"Context"）。默认：`false`。
 
 **面板展开**（`panel_expanded`）：完成态卡片中推理面板和工具面板默认折叠，设为 `true` 保持展开。
+
+**卡片宽度**（`streaming.width_mode`）：控制卡片宽度模式，可选 `default`、`compact`、`fill`。默认：`default`。
 
 ---
 
