@@ -516,25 +516,25 @@ class StreamCardController(StreamingController):
 
         # Estimate cost from tokens (rough estimate)
         cost_str = None
-        if tokens:
-            inp = tokens.get("input_tokens", 0) or 0
-            out = tokens.get("output_tokens", 0) or 0
-            # ~$0.15/M input, ~$0.60/M output for DeepSeek-class models
-            est = (inp * 0.15 + out * 0.60) / 1_000_000
-            if est > 0.001:
-                cost_str = f"\u00a5{est * 7.3:.2f}"  # rough USD->CNY
-            elif inp > 0 or out > 0:
-                cost_str = f"${est:.4f}"
-
-        # Query balance for DeepSeek provider
         balance_str = None
+
         if provider == "deepseek":
+            # Pay-per-use: show cost estimate and balance
+            if tokens:
+                inp = tokens.get("input_tokens", 0) or 0
+                out = tokens.get("output_tokens", 0) or 0
+                est = (inp * 0.15 + out * 0.60) / 1_000_000
+                if est > 0.001:
+                    cost_str = f"¥{est * 7.3:.2f}"
+                elif inp > 0 or out > 0:
+                    cost_str = f"${est:.4f}"
             try:
                 bal = _get_deepseek_balance()
                 if bal is not None:
-                    balance_str = f"\u00a5{bal:.2f}"
+                    balance_str = f"¥{bal:.2f}"
             except Exception:
                 pass
+        # For opencode-go (subscription): no cost/balance display
 
         session.footer = {
             "duration": duration,
