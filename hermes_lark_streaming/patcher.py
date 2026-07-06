@@ -816,10 +816,6 @@ class Patcher:
         sites: list[tuple[int, str, str]] = []
         for hook_fn_name, name, loc in hook_defs:
             if loc is None:
-                # status heartbeat is optional — skip silently if anchor not found
-                if hook_fn_name == "status":
-                    _logger.info("Status heartbeat anchor not found, skipping")
-                    continue
                 raise PatcherError(
                     f"Cannot locate {name} injection site — Hermes version may be incompatible"
                 )
@@ -967,11 +963,34 @@ def _find_bg_deliver_site(tree: ast.Module, lines: list[str]) -> tuple[int, str]
 
 
 def _find_status_heartbeat_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
-    """Locate the injection point in _notify_long_running, right after
-    ``_heartbeat_text = f"⏳ Working ..."`` and before the send/edit block."""
+    """Locate the injection point for status heartbeat hook.
+
+    Handles both single-line and multi-line _heartbeat_text formats:
+    1. ``_heartbeat_text = f"⏳ Working ..."`` (v2026.6.x, single-line)
+    2. ``_heartbeat_text = (`` with f-string on next line (v2026.7.x, multi-line)
+    """
     for i, line in enumerate(lines):
         if "_heartbeat_text = f\"⏳ Working" in line:
+            # Single-line format: inject right after
             return i + 1, _safe_indent(lines, i)
+        if line.strip() == "_heartbeat_text = (":
+            # Multi-line format: find the closing ")" and inject after it
+            for j in range(i + 1, min(i + 10, len(lines))):
+                if lines[j].strip() == ")":
+                    return j + 1, _safe_indent(lines, i)
+            # Fallback: inject after the opening line
+            return i + 1, _safe_indent(lines, i)
+
+    # Fallback: find _notify_long_running or _stop_impl, inject after docstring
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("async def _notify_long_running") or s.startswith("async def _stop_impl") or s.startswith("def _stop_impl"):
+            for j in range(i + 1, min(i + 30, len(lines))):
+                stripped = lines[j].strip()
+                if stripped and not stripped.startswith('"""') and not stripped.startswith("#"):
+                    return j, _safe_indent(lines, j)  # body indent
+            return i + 2, _safe_indent(lines, i + 1) if i + 1 < len(lines) else ""
+
     return None
 
 

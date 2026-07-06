@@ -31,14 +31,16 @@ RUN_BAK = RUN_SRC.with_suffix(RUN_SRC.suffix + ".hermes_lark.bak")
 SAMPLES_DIR = Path(__file__).parent / "samples"
 SAMPLE_RUN = SAMPLES_DIR / "run.py"
 
-_RUN_URL = "https://raw.githubusercontent.com/NousResearch/hermes-agent/v2026.6.19/gateway/run.py"
-_CRON_URL = "https://raw.githubusercontent.com/NousResearch/hermes-agent/v2026.6.19/cron/scheduler.py"
+_RUN_URL = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/gateway/run.py"
+_CRON_URL = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/cron/scheduler.py"
 
 CRON_SRC = Path.home() / ".hermes" / "hermes-agent" / "cron" / "scheduler.py"
 CRON_BAK = CRON_SRC.with_suffix(CRON_SRC.suffix + ".hermes_lark.bak")
 SAMPLE_CRON = SAMPLES_DIR / "scheduler.py"
 
 def _ensure_sample() -> Path:
+    if SAMPLE_RUN.exists():
+        return SAMPLE_RUN
     src = RUN_BAK if RUN_BAK.exists() else RUN_SRC
     SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
     if src.exists():
@@ -63,6 +65,8 @@ def run_copy(tmp_path: Path) -> Path:
 
 
 def _ensure_cron_sample() -> Path:
+    if SAMPLE_CRON.exists():
+        return SAMPLE_CRON
     src = CRON_BAK if CRON_BAK.exists() else CRON_SRC
     SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
     if src.exists():
