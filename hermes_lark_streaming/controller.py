@@ -493,13 +493,46 @@ class StreamCardController(StreamingController):
             if final_answer:
                 session.segment_state.on_answer_delta(final_answer)
 
+        # Extract provider from model string (format: "provider/model" or just "model")
+        provider = ""
+        clean_model = model
+        if model and "/" in model:
+            parts = model.split("/", 1)
+            provider = parts[0]
+            clean_model = parts[1]
+        else:
+            clean_model = model
+            # Fallback: read current provider from config
+            try:
+                from .config import Config
+                cfg = Config()
+                raw = cfg._reload()
+                model_cfg = raw.get("model", {})
+                if isinstance(model_cfg, dict):
+                    provider = model_cfg.get("provider", "") or ""
+            except Exception:
+                provider = provider or ""
+
+        # Estimate cost from tokens (rough estimate)
+        cost_str = None
+        if tokens:
+            inp = tokens.get("input_tokens", 0) or 0
+            out = tokens.get("output_tokens", 0) or 0
+            # ~$0.15/M input, ~$0.60/M output for DeepSeek-class models
+            est = (inp * 0.15 + out * 0.60) / 1_000_000
+            if est > 0.001:
+                cost_str = f"\u00a5{est * 7.3:.2f}"  # rough USD->CNY
+            elif inp > 0 or out > 0:
+                cost_str = f"${est:.4f}"
+
         session.footer = {
             "duration": duration,
-            "model": model,
-            **({"input_tokens": tokens.get("input_tokens")} if tokens else {}),
-            **({"output_tokens": tokens.get("output_tokens")} if tokens else {}),
-            **({"context_used": context.get("used_tokens")} if context else {}),
-            **({"context_max": context.get("max_tokens")} if context else {}),
+            "model": clean_model or model,
+            "provider": provider,
+            **(tokens or {}),
+            "context_used": (context.get("used_tokens") or 0) if context else 0,
+            "context_max": (context.get("max_tokens") or 0) if context else 0,
+            **({"cost": cost_str} if cost_str else {}),
         }
 
     def _complete_session(self, session: CardSession) -> None:

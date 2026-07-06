@@ -352,6 +352,18 @@ def _render_footer_field(
         v = data.get("model") or None
         return v, v
 
+    if name == "provider":
+        v = data.get("provider") or None
+        return v, v
+
+    if name == "balance":
+        v = data.get("balance") or None
+        return v, v
+
+    if name == "cost":
+        v = data.get("cost") or None
+        return v, v
+
     if name == "tokens":
         input_t = data.get("input_tokens", 0) or 0
         output_t = data.get("output_tokens", 0) or 0
