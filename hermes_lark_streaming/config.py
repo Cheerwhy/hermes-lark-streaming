@@ -8,7 +8,37 @@ from typing import Any
 
 import yaml
 
-_HERMES_CONFIG_PATH = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "config.yaml"
+_HERMES_HOME = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+_HERMES_CONFIG_PATH = _HERMES_HOME / "config.yaml"
+_HERMES_ENV_PATH = _HERMES_HOME / ".env"
+
+
+def _load_env_file(path: Path) -> None:
+    """Parse a simple .env file into os.environ without overwriting existing values.
+
+    Hermes itself reads .env at gateway startup, but this plugin is sometimes
+    invoked from a shell (e.g. ``hermes_lark_streaming status``) where .env has
+    not been sourced. Parsing it here lets ``env_app_id`` / ``env_app_secret``
+    resolve in both contexts. Existing env values win so callers can still
+    override per-invocation.
+    """
+    if not path.is_file():
+        return
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, sep, value = line.partition("=")
+            if not sep:
+                continue
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except OSError:
+        # .env is best-effort; never let a missing/unreadable file crash config load.
+        pass
 
 
 class Config:
@@ -16,6 +46,12 @@ class Config:
 
     def __init__(self) -> None:
         self._raw: dict[str, Any] | None = None
+        # Ensure .env is sourced at construction time, not just inside _load.
+        # env_app_id is queried before _load ever runs in some code paths
+        # (e.g. _platform_cfg short-circuits on env), so the env must be live
+        # by the time ``feishu_app_id`` is first accessed. Existing env values
+        # win — callers can still override per-invocation.
+        _load_env_file(_HERMES_ENV_PATH)
 
     @property
     def enabled(self) -> bool:
@@ -142,7 +178,15 @@ class Config:
         return {}
 
     def _platform_cfg(self) -> dict[str, Any]:
-        """从环境变量或平台配置找飞书凭据."""
+        """从环境变量或平台配置找飞书凭据.
+
+        Resolution order (first match wins):
+        1. ``FEISHU_APP_ID`` + ``FEISHU_APP_SECRET`` (and ``LARK_*`` aliases) env vars
+        2. Top-level ``feishu:`` or ``lark:`` section in config.yaml (legacy layout)
+        3. ``platforms.feishu.extra:`` or ``platforms.lark.extra:`` (canonical
+           Hermes multi-profile layout — the per-profile gateway stores its
+           Feishu bot credentials there so each profile can bind a different bot)
+        """
         if self.env_app_id and self.env_app_secret:
             return {
                 "app_id": self.env_app_id,
@@ -157,11 +201,34 @@ class Config:
             pf = raw.get(key)
             if isinstance(pf, dict) and pf.get("app_id"):
                 return pf
+        # Canonical multi-profile layout: each profile's Feishu bot credentials
+        # live under platforms.<name>.extra.app_id / app_secret.
+        platforms = raw.get("platforms")
+        if isinstance(platforms, dict):
+            for key in ("feishu", "lark"):
+                pf = platforms.get(key)
+                if not isinstance(pf, dict):
+                    continue
+                extra = pf.get("extra")
+                if isinstance(extra, dict) and extra.get("app_id"):
+                    # base_url lives at the platforms.<name>.level alongside extra
+                    result: dict[str, Any] = {
+                        "app_id": extra["app_id"],
+                        "app_secret": extra.get("app_secret", ""),
+                    }
+                    base_url = pf.get("base_url")
+                    if isinstance(base_url, str) and base_url:
+                        result["base_url"] = base_url
+                    return result
         return {}
 
     def _load(self) -> dict[str, Any]:
         if self._raw is not None:
             return self._raw
+        # .env is sourced in __init__; this call is a defensive idempotent
+        # re-load in case _load is invoked before the Config is constructed
+        # (e.g. via _raw bypassed in a subclass).
+        _load_env_file(_HERMES_ENV_PATH)
         if _HERMES_CONFIG_PATH.exists():
             text = _HERMES_CONFIG_PATH.read_text(encoding="utf-8")
             self._raw = yaml.safe_load(text) or {}

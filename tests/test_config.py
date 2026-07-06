@@ -269,3 +269,249 @@ class TestPlatformCfg:
         cfg = _make_config({})
         with patch.dict(os.environ, {}, clear=True):
             assert cfg._platform_cfg() == {}
+
+
+class TestPlatformsExtraLayout:
+    """Test the canonical Hermes multi-profile layout:
+    ``platforms.feishu.extra.app_id`` / ``platforms.feishu.extra.app_secret``.
+
+    Each Hermes profile (claudia, bill, cody, hazel, laura, onix, pos) binds a
+    different Feishu bot, with credentials stored under platforms.<name>.extra
+    in its own config.yaml. The plugin must read from this layout so streaming
+    cards work per-profile instead of being silently disabled.
+    """
+
+    def test_platforms_feishu_extra(self) -> None:
+        cfg = _make_config(
+            {
+                "platforms": {
+                    "feishu": {
+                        "extra": {
+                            "app_id": "pf_id",
+                            "app_secret": "pf_secret",
+                            "domain": "feishu",
+                        }
+                    }
+                }
+            }
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            result = cfg._platform_cfg()
+            assert result["app_id"] == "pf_id"
+            assert result["app_secret"] == "pf_secret"
+
+    def test_platforms_lark_extra(self) -> None:
+        cfg = _make_config(
+            {
+                "platforms": {
+                    "lark": {
+                        "extra": {
+                            "app_id": "lk_id",
+                            "app_secret": "lk_secret",
+                        }
+                    }
+                }
+            }
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            result = cfg._platform_cfg()
+            assert result["app_id"] == "lk_id"
+            assert result["app_secret"] == "lk_secret"
+
+    def test_platforms_extra_with_base_url(self) -> None:
+        cfg = _make_config(
+            {
+                "platforms": {
+                    "feishu": {
+                        "base_url": "https://custom.example.com",
+                        "extra": {"app_id": "u_id", "app_secret": "u_secret"},
+                    }
+                }
+            }
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            assert cfg.feishu_base_url == "https://custom.example.com"
+            assert cfg.feishu_app_id == "u_id"
+
+    def test_platforms_extra_missing_app_secret(self) -> None:
+        cfg = _make_config(
+            {
+                "platforms": {
+                    "feishu": {
+                        "extra": {
+                            "app_id": "only_id",
+                        }
+                    }
+                }
+            }
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            assert cfg.feishu_app_id == "only_id"
+            assert cfg.feishu_app_secret == ""
+
+    def test_platforms_feishu_without_extra_falls_through(self) -> None:
+        """``platforms.feishu`` may exist (with display flags) but no ``extra`` —
+        in that case resolution must continue to the next strategy rather than
+        returning an empty dict."""
+        cfg = _make_config(
+            {
+                "platforms": {
+                    "feishu": {
+                        "streaming": True,
+                        "busy_ack_detail": False,
+                    }
+                }
+            }
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            assert cfg._platform_cfg() == {}
+
+    def test_platforms_not_dict(self) -> None:
+        cfg = _make_config({"platforms": "not_a_dict"})
+        with patch.dict(os.environ, {}, clear=True):
+            assert cfg._platform_cfg() == {}
+
+    def test_platforms_feishu_not_dict(self) -> None:
+        cfg = _make_config({"platforms": {"feishu": "not_a_dict"}})
+        with patch.dict(os.environ, {}, clear=True):
+            assert cfg._platform_cfg() == {}
+
+    def test_extra_not_dict(self) -> None:
+        cfg = _make_config({"platforms": {"feishu": {"extra": "not_a_dict"}}})
+        with patch.dict(os.environ, {}, clear=True):
+            assert cfg._platform_cfg() == {}
+
+    def test_top_level_feishu_still_wins_over_platforms_extra(self) -> None:
+        """Backwards compat: top-level ``feishu:`` is still preferred over
+        ``platforms.feishu.extra`` when both are present (preserves the existing
+        test_feishu_before_lark / test_lark_section_fallback precedence)."""
+        cfg = _make_config(
+            {
+                "feishu": {"app_id": "top_id", "app_secret": "top_secret"},
+                "platforms": {
+                    "feishu": {"extra": {"app_id": "pf_id", "app_secret": "pf_secret"}}
+                },
+            }
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            result = cfg._platform_cfg()
+            assert result["app_id"] == "top_id"
+            assert result["app_secret"] == "top_secret"
+
+    def test_realistic_claudia_profile_layout(self) -> None:
+        """End-to-end: a realistic per-profile config with the same shape
+        claudia/bill/cody/etc. actually use must yield the expected credentials."""
+        cfg = _make_config(
+            {
+                "model": {"provider": "minimax-cn"},
+                "streaming": {"enabled": True},
+                "display": {
+                    "platforms": {
+                        "feishu": {
+                            "busy_ack_detail": False,
+                            "tool_progress": "off",
+                        }
+                    }
+                },
+                "platforms": {
+                    "feishu": {
+                        "extra": {
+                            "app_id": "cli_real",
+                            "app_secret": "real_secret",
+                            "connection_mode": "websocket",
+                            "default_group_policy": "open",
+                            "domain": "feishu",
+                        }
+                    },
+                    "telegram": {
+                        "extra": {"bot_token": "123:abc"},
+                    },
+                },
+            }
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            assert cfg.enabled is True
+            assert cfg.feishu_app_id == "cli_real"
+            assert cfg.feishu_app_secret == "real_secret"
+
+
+class TestEnvFileLoading:
+    """Test that ``$HERMES_HOME/.env`` is sourced at Config construction, so
+    CLI invocations (status, install, verify) see credentials the same way
+    the gateway process does. Existing env vars win — callers can override."""
+
+    def test_env_file_loaded_into_environ(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "hermes_lark_streaming.config._HERMES_ENV_PATH",
+            _FakePath("FEISHU_APP_ID=dotenv_id\nFEISHU_APP_SECRET=dotenv_secret\n"),
+        ):
+            cfg = Config()
+            assert cfg.env_app_id == "dotenv_id"
+            assert cfg.env_app_secret == "dotenv_secret"
+
+    def test_existing_env_wins_over_env_file(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"FEISHU_APP_ID": "explicit_id", "FEISHU_APP_SECRET": "explicit_secret"},
+            clear=True,
+        ), patch(
+            "hermes_lark_streaming.config._HERMES_ENV_PATH",
+            _FakePath("FEISHU_APP_ID=dotenv_id\nFEISHU_APP_SECRET=dotenv_secret\n"),
+        ):
+            cfg = Config()
+            assert cfg.env_app_id == "explicit_id"
+            assert cfg.env_app_secret == "explicit_secret"
+
+    def test_env_file_quoted_values_stripped(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "hermes_lark_streaming.config._HERMES_ENV_PATH",
+            _FakePath('FEISHU_APP_ID="qd_id"\nFEISHU_APP_SECRET=\'qs_secret\'\n'),
+        ):
+            cfg = Config()
+            assert cfg.env_app_id == "qd_id"
+            assert cfg.env_app_secret == "qs_secret"
+
+    def test_env_file_comments_and_blank_lines_skipped(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "hermes_lark_streaming.config._HERMES_ENV_PATH",
+            _FakePath("# top comment\n\nFEISHU_APP_ID=skip_id\nFEISHU_APP_SECRET=skip_secret\n"),
+        ):
+            cfg = Config()
+            assert cfg.env_app_id == "skip_id"
+            assert cfg.env_app_secret == "skip_secret"
+
+    def test_env_file_malformed_lines_silently_skipped(self) -> None:
+        """Lines without ``=`` are ignored — they shouldn't crash the loader."""
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "hermes_lark_streaming.config._HERMES_ENV_PATH",
+            _FakePath("garbage_no_equals\nFEISHU_APP_ID=ok_id\nFEISHU_APP_SECRET=ok_secret\n"),
+        ):
+            cfg = Config()
+            assert cfg.env_app_id == "ok_id"
+            assert cfg.env_app_secret == "ok_secret"
+
+    def test_missing_env_file_is_noop(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "hermes_lark_streaming.config._HERMES_ENV_PATH",
+            _FakePath(""),  # simulates nonexistent file
+        ):
+            cfg = Config()
+            assert cfg.env_app_id == ""
+            assert cfg.env_app_secret == ""
+
+
+class _FakePath:
+    """A minimal stand-in for a pathlib.Path whose .is_file() / .read_text()
+    match the bytes we hand it. Lets us patch ``_HERMES_ENV_PATH`` without
+    touching the real filesystem."""
+
+    def __init__(self, content: str) -> None:
+        self._content = content
+        self._exists = bool(content)
+
+    def is_file(self) -> bool:
+        return self._exists
+
+    def read_text(self, encoding: str = "utf-8") -> str:
+        return self._content
+
