@@ -19,6 +19,7 @@ from .streaming.controller import StreamingController
 from .streaming.segments import SegmentType
 from .streaming.session import CardSession, SessionState
 from .streaming.text import strip_reasoning_tags
+from .balance import _get_deepseek_balance
 
 _logger = logging.getLogger("hermes_lark_streaming")
 _CARD_CREATION_WAIT_SEC = 10.0
@@ -525,6 +526,16 @@ class StreamCardController(StreamingController):
             elif inp > 0 or out > 0:
                 cost_str = f"${est:.4f}"
 
+        # Query balance for DeepSeek provider
+        balance_str = None
+        if provider == "deepseek":
+            try:
+                bal = _get_deepseek_balance()
+                if bal is not None:
+                    balance_str = f"\u00a5{bal:.2f}"
+            except Exception:
+                pass
+
         session.footer = {
             "duration": duration,
             "model": clean_model or model,
@@ -533,6 +544,7 @@ class StreamCardController(StreamingController):
             "context_used": (context.get("used_tokens") or 0) if context else 0,
             "context_max": (context.get("max_tokens") or 0) if context else 0,
             **({"cost": cost_str} if cost_str else {}),
+            **({"balance": balance_str} if balance_str else {}),
         }
 
     def _complete_session(self, session: CardSession) -> None:
