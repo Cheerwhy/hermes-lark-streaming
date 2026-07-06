@@ -20,7 +20,8 @@
 - **思考过程** — 显示模型的推理/思考内容
 - **工具调用** — 实时展示工具调用状态和进度，含标准图标和结果/错误块
 - **CardKit v2.0** — 使用飞书 CardKit 流式 API；卡片创建失败时交回 Hermes Gateway 默认回复
-- **终态卡片** — 完成后展示完整结果，含 token 用量、耗时、上下文信息
+- **终态卡片** — 完成后展示完整结果，含 token 用量、耗时、上下文、厂家、模型及费用信息
+- **按需计费支持** — 区分按量计费（DeepSeek 显示费用和余额）与套餐（opencode-go 隐藏），自动适配
 - **卡片样式** — 可配置卡片 header、footer 显示开关及正文字字大小
 - **消息保护** — 消息被删除/撤回后自动终止更新，避免无效 API 调用
 - **图片解析** — 自动识别 markdown 图片引用，下载上传后替换为飞书 img_key
@@ -103,7 +104,7 @@ streaming:
     enabled: true         # 卡片 footer，默认 true
     text_size: notation   # Footer 文字大小，默认 notation
     fields:
-      - [status, elapsed, context, model]
+      - [status, elapsed, context, provider, model, cost]
     show_label: false
   panel_expanded: false   # 完成态面板保持展开，默认 false
 ```
@@ -120,9 +121,14 @@ streaming:
 |------|------|--------|--------|
 | `status` | 完成状态 | `✅ Completed` | `✅ Completed` |
 | `elapsed` | 耗时 | `Elapsed 12.3s` | `12.3s` |
+| `provider` | API 厂家 | `opencode-go` | `opencode-go` |
 | `model` | 模型名称 | `deepseek-v4-flash` | `deepseek-v4-flash` |
 | `tokens` | Token 用量 | `↑ 1.2K ↓ 500` | `↑ 1.2K ↓ 500` |
 | `context` | 上下文窗口用量 | `Context 50K/200K (25%)` | `50K/200K (25%)` |
+| `cost` | 预估费用（DeepSeek 按量计费时显示） | `¥0.08` | `¥0.08` |
+| `balance` | 账户余额（DeepSeek 按量计费时显示） | `¥15.50` | `¥15.50` |
+
+> **注意：** `cost` 和 `balance` 字段仅当 provider 为按量计费（如 DeepSeek）时自动显示；opencode-go 等套餐服务不显示，避免混淆。
 
 **显示标签**（`footer.show_label`）：是否展示字段标签（如 "Elapsed"、"Context"）。默认：`false`。
 

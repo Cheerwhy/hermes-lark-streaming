@@ -20,7 +20,8 @@ Inspired by [openclaw-lark](https://github.com/larksuite/openclaw-lark) and [her
 - **Reasoning display** — Shows model thinking/reasoning content
 - **Tool use tracking** — Live tool call status with standard icons, result/error blocks
 - **CardKit v2.0** — Uses Feishu CardKit streaming API; card creation failures yield to the Hermes Gateway default reply
-- **Completion card** — Final card with token usage, duration, and context info
+- **Completion card** — Final card with token usage, elapsed time, context, provider, model, and cost info
+- **Pay-per-use aware** — Differentiates subscription (opencode-go, hides cost/balance) vs pay-per-use (DeepSeek, shows cost + balance)
 - **Card style** — Configurable card header/footer toggle and body/footer text sizes
 - **Message guard** — Auto-terminates updates when message is deleted/recalled
 - **Image resolution** — Detects markdown image references, downloads and re-uploads as Feishu img_key
@@ -103,7 +104,7 @@ streaming:
     enabled: true         # Card footer, default true
     text_size: notation   # Footer text size, default notation
     fields:
-      - [status, elapsed, context, model]
+      - [status, elapsed, context, provider, model, cost]
     show_label: false
   panel_expanded: false   # Keep completion panels expanded, default false
 ```
@@ -120,9 +121,14 @@ streaming:
 |-------|-------------|------------|---------------|
 | `status` | Completion status | `✅ Completed` | `✅ Completed` |
 | `elapsed` | Time elapsed | `Elapsed 12.3s` | `12.3s` |
+| `provider` | API provider | `opencode-go` | `opencode-go` |
 | `model` | Model name | `deepseek-v4-flash` | `deepseek-v4-flash` |
 | `tokens` | Token usage | `↑ 1.2K ↓ 500` | `↑ 1.2K ↓ 500` |
 | `context` | Context window usage | `Context 50K/200K (25%)` | `50K/200K (25%)` |
+| `cost` | Estimated cost (DeepSeek pay-per-use only) | `¥0.08` | `¥0.08` |
+| `balance` | Account balance (DeepSeek pay-per-use only) | `¥15.50` | `¥15.50` |
+
+> **Note:** `cost` and `balance` fields only display automatically when the provider is pay-per-use (e.g., DeepSeek); they are hidden for subscription services like opencode-go.
 
 **Show Label** (`footer.show_label`): Whether to display field labels like "Elapsed", "Context". Default: `false`.
 
