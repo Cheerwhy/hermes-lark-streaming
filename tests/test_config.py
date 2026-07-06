@@ -273,23 +273,26 @@ class TestPlatformCfg:
 
 class TestPlatformsExtraLayout:
     """Test the canonical Hermes multi-profile layout:
-    ``platforms.feishu.extra.app_id`` / ``platforms.feishu.extra.app_secret``.
+    ``gateway.platforms.feishu.extra.app_id`` / ``gateway.platforms.feishu.extra.app_secret``.
 
     Each Hermes profile (claudia, bill, cody, hazel, laura, onix, pos) binds a
-    different Feishu bot, with credentials stored under platforms.<name>.extra
-    in its own config.yaml. The plugin must read from this layout so streaming
-    cards work per-profile instead of being silently disabled.
+    different Feishu bot, with credentials stored under
+    ``gateway.platforms.<name>.extra`` in its own config.yaml. The plugin
+    must read from this layout so streaming cards work per-profile instead
+    of being silently disabled.
     """
 
-    def test_platforms_feishu_extra(self) -> None:
+    def test_gateway_platforms_feishu_extra(self) -> None:
         cfg = _make_config(
             {
-                "platforms": {
-                    "feishu": {
-                        "extra": {
-                            "app_id": "pf_id",
-                            "app_secret": "pf_secret",
-                            "domain": "feishu",
+                "gateway": {
+                    "platforms": {
+                        "feishu": {
+                            "extra": {
+                                "app_id": "pf_id",
+                                "app_secret": "pf_secret",
+                                "domain": "feishu",
+                            }
                         }
                     }
                 }
@@ -300,14 +303,16 @@ class TestPlatformsExtraLayout:
             assert result["app_id"] == "pf_id"
             assert result["app_secret"] == "pf_secret"
 
-    def test_platforms_lark_extra(self) -> None:
+    def test_gateway_platforms_lark_extra(self) -> None:
         cfg = _make_config(
             {
-                "platforms": {
-                    "lark": {
-                        "extra": {
-                            "app_id": "lk_id",
-                            "app_secret": "lk_secret",
+                "gateway": {
+                    "platforms": {
+                        "lark": {
+                            "extra": {
+                                "app_id": "lk_id",
+                                "app_secret": "lk_secret",
+                            }
                         }
                     }
                 }
@@ -318,13 +323,15 @@ class TestPlatformsExtraLayout:
             assert result["app_id"] == "lk_id"
             assert result["app_secret"] == "lk_secret"
 
-    def test_platforms_extra_with_base_url(self) -> None:
+    def test_gateway_platforms_extra_with_base_url(self) -> None:
         cfg = _make_config(
             {
-                "platforms": {
-                    "feishu": {
-                        "base_url": "https://custom.example.com",
-                        "extra": {"app_id": "u_id", "app_secret": "u_secret"},
+                "gateway": {
+                    "platforms": {
+                        "feishu": {
+                            "base_url": "https://custom.example.com",
+                            "extra": {"app_id": "u_id", "app_secret": "u_secret"},
+                        }
                     }
                 }
             }
@@ -333,13 +340,15 @@ class TestPlatformsExtraLayout:
             assert cfg.feishu_base_url == "https://custom.example.com"
             assert cfg.feishu_app_id == "u_id"
 
-    def test_platforms_extra_missing_app_secret(self) -> None:
+    def test_gateway_platforms_extra_missing_app_secret(self) -> None:
         cfg = _make_config(
             {
-                "platforms": {
-                    "feishu": {
-                        "extra": {
-                            "app_id": "only_id",
+                "gateway": {
+                    "platforms": {
+                        "feishu": {
+                            "extra": {
+                                "app_id": "only_id",
+                            }
                         }
                     }
                 }
@@ -349,16 +358,18 @@ class TestPlatformsExtraLayout:
             assert cfg.feishu_app_id == "only_id"
             assert cfg.feishu_app_secret == ""
 
-    def test_platforms_feishu_without_extra_falls_through(self) -> None:
-        """``platforms.feishu`` may exist (with display flags) but no ``extra`` —
-        in that case resolution must continue to the next strategy rather than
-        returning an empty dict."""
+    def test_gateway_platforms_feishu_without_extra_falls_through(self) -> None:
+        """``gateway.platforms.feishu`` may exist (with display flags) but no
+        ``extra`` — in that case resolution must continue to the next strategy
+        rather than returning an empty dict."""
         cfg = _make_config(
             {
-                "platforms": {
-                    "feishu": {
-                        "streaming": True,
-                        "busy_ack_detail": False,
+                "gateway": {
+                    "platforms": {
+                        "feishu": {
+                            "streaming": True,
+                            "busy_ack_detail": False,
+                        }
                     }
                 }
             }
@@ -366,30 +377,62 @@ class TestPlatformsExtraLayout:
         with patch.dict(os.environ, {}, clear=True):
             assert cfg._platform_cfg() == {}
 
-    def test_platforms_not_dict(self) -> None:
-        cfg = _make_config({"platforms": "not_a_dict"})
+    def test_top_level_platforms_feishu_extra_still_resolves(self) -> None:
+        """Defensive fallback: future Hermes versions might hoist the section
+        from ``gateway.platforms`` to top-level ``platforms``. We accept that
+        layout too, since the credentials are functionally identical.
+        """
+        cfg = _make_config(
+            {
+                "platforms": {
+                    "feishu": {
+                        "extra": {
+                            "app_id": "top_pf_id",
+                            "app_secret": "top_pf_secret",
+                        }
+                    }
+                }
+            }
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            result = cfg._platform_cfg()
+            assert result["app_id"] == "top_pf_id"
+            assert result["app_secret"] == "top_pf_secret"
+
+    def test_gateway_not_dict(self) -> None:
+        cfg = _make_config({"gateway": "not_a_dict"})
         with patch.dict(os.environ, {}, clear=True):
             assert cfg._platform_cfg() == {}
 
-    def test_platforms_feishu_not_dict(self) -> None:
-        cfg = _make_config({"platforms": {"feishu": "not_a_dict"}})
+    def test_gateway_platforms_not_dict(self) -> None:
+        cfg = _make_config({"gateway": {"platforms": "not_a_dict"}})
         with patch.dict(os.environ, {}, clear=True):
             assert cfg._platform_cfg() == {}
 
-    def test_extra_not_dict(self) -> None:
-        cfg = _make_config({"platforms": {"feishu": {"extra": "not_a_dict"}}})
+    def test_gateway_platforms_feishu_not_dict(self) -> None:
+        cfg = _make_config({"gateway": {"platforms": {"feishu": "not_a_dict"}}})
         with patch.dict(os.environ, {}, clear=True):
             assert cfg._platform_cfg() == {}
 
-    def test_top_level_feishu_still_wins_over_platforms_extra(self) -> None:
+    def test_gateway_extra_not_dict(self) -> None:
+        cfg = _make_config(
+            {"gateway": {"platforms": {"feishu": {"extra": "not_a_dict"}}}}
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            assert cfg._platform_cfg() == {}
+
+    def test_top_level_feishu_still_wins_over_gateway_extra(self) -> None:
         """Backwards compat: top-level ``feishu:`` is still preferred over
-        ``platforms.feishu.extra`` when both are present (preserves the existing
-        test_feishu_before_lark / test_lark_section_fallback precedence)."""
+        ``gateway.platforms.feishu.extra`` when both are present (preserves the
+        existing test_feishu_before_lark / test_lark_section_fallback
+        precedence)."""
         cfg = _make_config(
             {
                 "feishu": {"app_id": "top_id", "app_secret": "top_secret"},
-                "platforms": {
-                    "feishu": {"extra": {"app_id": "pf_id", "app_secret": "pf_secret"}}
+                "gateway": {
+                    "platforms": {
+                        "feishu": {"extra": {"app_id": "pf_id", "app_secret": "pf_secret"}}
+                    }
                 },
             }
         )
@@ -413,18 +456,20 @@ class TestPlatformsExtraLayout:
                         }
                     }
                 },
-                "platforms": {
-                    "feishu": {
-                        "extra": {
-                            "app_id": "cli_real",
-                            "app_secret": "real_secret",
-                            "connection_mode": "websocket",
-                            "default_group_policy": "open",
-                            "domain": "feishu",
-                        }
-                    },
-                    "telegram": {
-                        "extra": {"bot_token": "123:abc"},
+                "gateway": {
+                    "platforms": {
+                        "feishu": {
+                            "extra": {
+                                "app_id": "cli_real",
+                                "app_secret": "real_secret",
+                                "connection_mode": "websocket",
+                                "default_group_policy": "open",
+                                "domain": "feishu",
+                            }
+                        },
+                        "telegram": {
+                            "extra": {"bot_token": "123:abc"},
+                        },
                     },
                 },
             }
@@ -433,6 +478,31 @@ class TestPlatformsExtraLayout:
             assert cfg.enabled is True
             assert cfg.feishu_app_id == "cli_real"
             assert cfg.feishu_app_secret == "real_secret"
+
+    def test_realistic_claudia_profile_with_env(self) -> None:
+        """When ``.env`` is also present (the typical real-world setup) the
+        env path takes priority over the config — this is the same precedence
+        the gateway process uses."""
+        cfg = _make_config(
+            {
+                "gateway": {
+                    "platforms": {
+                        "feishu": {
+                            "extra": {
+                                "app_id": "cli_config",
+                                "app_secret": "config_secret",
+                            }
+                        }
+                    }
+                }
+            }
+        )
+        with patch.dict(
+            os.environ,
+            {"FEISHU_APP_ID": "cli_env", "FEISHU_APP_SECRET": "env_secret"},
+        ):
+            assert cfg.feishu_app_id == "cli_env"
+            assert cfg.feishu_app_secret == "env_secret"
 
 
 class TestEnvFileLoading:

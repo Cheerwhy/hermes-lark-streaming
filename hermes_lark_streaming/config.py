@@ -183,9 +183,10 @@ class Config:
         Resolution order (first match wins):
         1. ``FEISHU_APP_ID`` + ``FEISHU_APP_SECRET`` (and ``LARK_*`` aliases) env vars
         2. Top-level ``feishu:`` or ``lark:`` section in config.yaml (legacy layout)
-        3. ``platforms.feishu.extra:`` or ``platforms.lark.extra:`` (canonical
-           Hermes multi-profile layout — the per-profile gateway stores its
-           Feishu bot credentials there so each profile can bind a different bot)
+        3. ``gateway.platforms.feishu.extra:`` or ``gateway.platforms.lark.extra:``
+           (canonical Hermes multi-profile layout — the per-profile gateway
+           stores its Feishu bot credentials there so each profile can bind a
+           different bot)
         """
         if self.env_app_id and self.env_app_secret:
             return {
@@ -202,9 +203,20 @@ class Config:
             if isinstance(pf, dict) and pf.get("app_id"):
                 return pf
         # Canonical multi-profile layout: each profile's Feishu bot credentials
-        # live under platforms.<name>.extra.app_id / app_secret.
-        platforms = raw.get("platforms")
-        if isinstance(platforms, dict):
+        # live under gateway.platforms.<name>.extra.app_id / app_secret. We
+        # also walk a top-level ``platforms`` section (no gateway parent) as a
+        # defensive fallback for configs that hoist the section up — the
+        # credentials live in the same shape, so resolution is identical.
+        candidate_parents: list[dict[str, Any]] = []
+        gw = raw.get("gateway")
+        if isinstance(gw, dict) and isinstance(gw.get("platforms"), dict):
+            candidate_parents.append(gw["platforms"])
+        top_platforms = raw.get("platforms")
+        if isinstance(top_platforms, dict) and isinstance(top_platforms.get("feishu"), dict):
+            # Only add if it looks like the platforms-with-feishu shape, not
+            # a coincidentally-named "platforms" dict from another section.
+            candidate_parents.append(top_platforms)
+        for platforms in candidate_parents:
             for key in ("feishu", "lark"):
                 pf = platforms.get(key)
                 if not isinstance(pf, dict):
