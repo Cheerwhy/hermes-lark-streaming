@@ -305,3 +305,22 @@ async def on_background_deliver(
     except Exception as exc:
         _logger.warning("on_background_deliver error: %s", exc, exc_info=True)
         return False
+
+
+@_safe_hook(default_return=False, log_level="debug")
+def on_status_heartbeat(*, ctrl: Any, message_id: str, text: str) -> bool:
+    """[注入点 12] _notify_long_running — heartbeat status text.
+
+    Catches the "⏳ Working — N min — iteration X/Y" heartbeat before it's
+    sent as a separate text message.  If a streaming card is active, routes
+    the text to the card's status_bar element instead and returns True to
+    consume it.  Returns False when no card is active (gateway falls back
+    to the original send).
+    """
+    session = ctrl._get_active_session(message_id)
+    if session is None:
+        return False
+    session.status_text = text
+    session.status_dirty = True
+    ctrl._schedule_flush(session)
+    return True

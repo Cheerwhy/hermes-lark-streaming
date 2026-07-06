@@ -28,6 +28,7 @@ from .segment_helper import (
     build_add_segment_action,
     build_reasoning_finalized_action,
     build_tool_update_action,
+    build_update_status_action,
     estimate_segment_elements,
     estimate_tool_elements,
     find_tool_split_offset,
@@ -268,6 +269,11 @@ class StreamingController:
                 updated_tool_segs.append(seg)
                 new_el_estimates[seg.el_id] = estimate
                 new_el_total += estimate - seg.element_estimate
+
+        # Status bar update — append to batch so it ships with structural changes
+        if session.status_dirty and session.status_text:
+            actions.append(build_update_status_action(session.status_text))
+            session.status_dirty = False
 
         if actions and not await self._do_batch_update(
             session, segments, actions, new_el_ids, new_el_estimates, updated_tool_segs,

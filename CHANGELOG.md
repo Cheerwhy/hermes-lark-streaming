@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 新增
+
+- **Clarify 卡片化**：`clarify` 工具在飞书端不再渲染编号文本，而是发送原生交互卡片
+  （问题 + 选项按钮 +「其他」自定义输入按钮）。按钮点击通过 `clarify_gateway`
+  原语解析，内联更新卡片显示已选项。实现完全基于 Hermes 文档化的 `send_clarify`
+  扩展点与 `_on_card_action_trigger` 回调分发，由新增的 `FeishuAdapterPatcher`
+  注入 `gateway/platforms/feishu.py`（与现有 `Patcher`/`CronPatcher` 平行、幂等、可逆）。
+  发送失败自动回退 `super().send_clarify`（编号文本），不影响其他平台。
+
 ## [0.11.2] - 2026-07-01
 
 ### 修复

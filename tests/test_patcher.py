@@ -31,8 +31,8 @@ RUN_BAK = RUN_SRC.with_suffix(RUN_SRC.suffix + ".hermes_lark.bak")
 SAMPLES_DIR = Path(__file__).parent / "samples"
 SAMPLE_RUN = SAMPLES_DIR / "run.py"
 
-_RUN_URL = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/gateway/run.py"
-_CRON_URL = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/cron/scheduler.py"
+_RUN_URL = "https://raw.githubusercontent.com/NousResearch/hermes-agent/v2026.6.19/gateway/run.py"
+_CRON_URL = "https://raw.githubusercontent.com/NousResearch/hermes-agent/v2026.6.19/cron/scheduler.py"
 
 CRON_SRC = Path.home() / ".hermes" / "hermes-agent" / "cron" / "scheduler.py"
 CRON_BAK = CRON_SRC.with_suffix(CRON_SRC.suffix + ".hermes_lark.bak")

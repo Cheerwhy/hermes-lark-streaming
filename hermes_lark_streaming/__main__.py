@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .patcher import CronPatcher, Patcher
+    from .patcher import CronPatcher, FeishuAdapterPatcher, Patcher
 
 
 def main() -> int:
@@ -68,6 +68,15 @@ def _get_cron_patcher() -> CronPatcher | None:
         return None
 
 
+def _get_feishu_patcher() -> FeishuAdapterPatcher | None:
+    from .patcher import FeishuAdapterPatcher, PatcherError
+
+    try:
+        return FeishuAdapterPatcher()
+    except PatcherError:
+        return None
+
+
 def _cmd_install() -> int:
     patcher = _get_patcher()
     if patcher is None:
@@ -101,6 +110,15 @@ def _cmd_install() -> int:
         except Exception as e:
             print(f"Cron hook skipped: {e}")
 
+    feishu_patcher = _get_feishu_patcher()
+    if feishu_patcher is not None and not feishu_patcher.is_fully_patched():
+        try:
+            feishu_patcher.verify_target()
+            feishu_patcher.apply()
+            print("Feishu clarify-card hook applied.")
+        except Exception as e:
+            print(f"Feishu clarify-card hook skipped: {e}")
+
     return 0
 
 
@@ -116,6 +134,14 @@ def _cmd_uninstall() -> int:
             print("Cron hook removed.")
         except Exception as e:
             print(f"Cron hook remove failed: {e}")
+
+    feishu_patcher = _get_feishu_patcher()
+    if feishu_patcher is not None and feishu_patcher.is_patched():
+        try:
+            feishu_patcher.remove()
+            print("Feishu clarify-card hook removed.")
+        except Exception as e:
+            print(f"Feishu clarify-card remove failed: {e}")
 
     if not patcher.is_patched():
         print("Not patched.")
@@ -141,6 +167,14 @@ def _cmd_restore() -> int:
         try:
             cron_patcher.restore()
             print("Cron hook restored.")
+        except Exception:
+            pass
+
+    feishu_patcher = _get_feishu_patcher()
+    if feishu_patcher is not None:
+        try:
+            feishu_patcher.restore()
+            print("Feishu clarify-card hook restored.")
         except Exception:
             pass
 
@@ -175,6 +209,12 @@ def _cmd_status() -> int:
     cron_patcher = _get_cron_patcher()
     if cron_patcher is not None:
         print(f"Cron hook: {'installed' if cron_patcher.is_patched() else 'not installed'}")
+
+    feishu_patcher = _get_feishu_patcher()
+    if feishu_patcher is not None:
+        print(
+            f"Feishu clarify-card: {'installed' if feishu_patcher.is_fully_patched() else 'not installed'}"
+        )
 
     # Check config
     from .config import Config
@@ -223,6 +263,16 @@ def _cmd_verify() -> int:
             print(f"Cron incompatible: {e}")
             return 1
         print("Cron target compatible.")
+
+    feishu_patcher = _get_feishu_patcher()
+    if feishu_patcher is not None:
+        print(f"Feishu target: {feishu_patcher.feishu_path}")
+        try:
+            feishu_patcher.verify_target()
+        except Exception as e:
+            print(f"Feishu clarify-card incompatible: {e}")
+            return 1
+        print("Feishu target compatible.")
 
     return 0
 

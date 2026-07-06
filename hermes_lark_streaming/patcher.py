@@ -34,6 +34,7 @@ _HOOK_NAMES = [
     "ABORT",
     "INTERRUPT",
     "BG_DELIVER",
+    "STATUS",
 ]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
@@ -50,6 +51,7 @@ MK_BACKGROUND_REVIEW, MK_BACKGROUND_REVIEW_END = MARKERS[9]
 MK_ABORT, MK_ABORT_END = MARKERS[10]
 MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[11]
 MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[12]
+MK_STATUS, MK_STATUS_END = MARKERS[13]
 
 _BACKUP_SUFFIX = ".hermes_lark.bak"
 
@@ -185,8 +187,28 @@ def _default_cron_path() -> Path:
     return _resolve_module_path("cron.scheduler", _code_roots())
 
 
+def _default_feishu_path() -> Path:
+    return _resolve_module_path("gateway.platforms.feishu", _code_roots())
+
+
 MK_CRON_DELIVER = f"# {PREFIX}_CRON_DELIVER_BEGIN"
 MK_CRON_DELIVER_END = f"# {PREFIX}_CRON_DELIVER_END"
+
+# Clarify-as-card markers (injected into gateway/platforms/feishu.py by
+# FeishuAdapterPatcher): a send_clarify method override + a clarify branch
+# in _on_card_action_trigger. See hermes_lark_streaming.clarify.
+MK_SEND_CLARIFY = f"# {PREFIX}_SEND_CLARIFY_BEGIN"
+MK_SEND_CLARIFY_END = f"# {PREFIX}_SEND_CLARIFY_END"
+MK_CLARIFY_ACTION = f"# {PREFIX}_CLARIFY_ACTION_BEGIN"
+MK_CLARIFY_ACTION_END = f"# {PREFIX}_CLARIFY_ACTION_END"
+
+# Model picker markers (injected into gateway/platforms/feishu.py by
+# FeishuAdapterPatcher): a send_model_picker method override + a model_picker
+# branch in _on_card_action_trigger. See hermes_lark_streaming.model_picker.
+MK_SEND_MODEL_PICKER = f"# {PREFIX}_SEND_MODEL_PICKER_BEGIN"
+MK_SEND_MODEL_PICKER_END = f"# {PREFIX}_SEND_MODEL_PICKER_END"
+MK_MODEL_PICKER_ACTION = f"# {PREFIX}_MODEL_PICKER_ACTION_BEGIN"
+MK_MODEL_PICKER_ACTION_END = f"# {PREFIX}_MODEL_PICKER_ACTION_END"
 
 _ANCHOR_CHECKS: list[tuple[str, tuple[str, ...], str]] = [
     ("Restart typing indicator so the user sees activity", (), "interrupt"),
@@ -515,6 +537,117 @@ def _bg_deliver_hook(indent: str) -> str:
     )
 
 
+def _status_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_STATUS,
+        MK_STATUS_END,
+        [
+            "try:",
+            "    from hermes_lark_streaming.patch import on_status_heartbeat",
+            "    if on_status_heartbeat(message_id=event_message_id, text=_heartbeat_text):",
+            "        continue",
+            "except Exception:",
+            "    pass",
+        ],
+    )
+
+
+def _send_clarify_method_hook(indent: str) -> str:
+    """Render the injected ``send_clarify`` override (Feishu adapter method).
+
+    A thin delegator: if the Feishu client is connected, send the clarify card
+    via ``hermes_lark_streaming.clarify.send_clarify_card``; otherwise (or on
+    failure) fall back to ``super().send_clarify`` (the base numbered-text
+    render).  ``super()`` resolves correctly because this method is textually
+    inserted into the Feishu adapter class body.
+    """
+    return _make_hook(
+        indent,
+        MK_SEND_CLARIFY,
+        MK_SEND_CLARIFY_END,
+        [
+            "async def send_clarify(self, chat_id, question, choices, clarify_id, session_key, metadata=None):",
+            "    if not self._client:",
+            "        return await super().send_clarify(chat_id=chat_id, question=question, choices=choices, clarify_id=clarify_id, session_key=session_key, metadata=metadata)",
+            "    try:",
+            "        from hermes_lark_streaming.clarify import send_clarify_card as _lark_send_clarify",
+            "        return await _lark_send_clarify(self, chat_id=chat_id, question=question, choices=choices, clarify_id=clarify_id, session_key=session_key, metadata=metadata)",
+            "    except Exception:",
+            "        logger.warning('[Feishu] clarify card send failed, falling back to text', exc_info=True)",
+            "        return await super().send_clarify(chat_id=chat_id, question=question, choices=choices, clarify_id=clarify_id, session_key=session_key, metadata=metadata)",
+        ],
+    )
+
+
+def _clarify_action_hook(indent: str) -> str:
+    """Render the clarify branch injected into ``_on_card_action_trigger``.
+
+    Runs after ``action_value`` / ``hermes_action`` are extracted, before the
+    ``if hermes_action:`` approval dispatch.  Clarify button clicks (value key
+    ``hermes_clarify``) are routed to ``handle_clarify_card_action`` which
+    resolves the pending clarify and returns an inline updated card.  Other
+    card actions fall through unchanged.
+    """
+    return _make_hook(
+        indent,
+        MK_CLARIFY_ACTION,
+        MK_CLARIFY_ACTION_END,
+        [
+            "try:",
+            "    if isinstance(action_value, dict) and action_value.get('hermes_clarify'):",
+            "        from hermes_lark_streaming.clarify import handle_clarify_card_action as _lark_clarify_action",
+            "        return _lark_clarify_action(self, event=event, action_value=action_value, loop=loop)",
+            "except Exception:",
+            "    logger.warning('[Feishu] clarify card action handler failed', exc_info=True)",
+        ],
+    )
+
+
+def _send_model_picker_method_hook(indent: str) -> str:
+    """Render the injected ``send_model_picker`` override (Feishu adapter method).
+
+    Delegates to ``hermes_lark_streaming.model_picker.send_model_picker`` which
+    builds a blue-header card with a ``select_static`` dropdown.
+    """
+    return _make_hook(
+        indent,
+        MK_SEND_MODEL_PICKER,
+        MK_SEND_MODEL_PICKER_END,
+        [
+            "async def send_model_picker(self, chat_id, providers, current_model, current_provider, session_key, on_model_selected, metadata=None):",
+            "    try:",
+            "        from hermes_lark_streaming.model_picker import send_model_picker as _lark_send_model_picker",
+            "        return await _lark_send_model_picker(self, chat_id=chat_id, providers=providers, current_model=current_model, current_provider=current_provider, session_key=session_key, on_model_selected=on_model_selected, metadata=metadata)",
+            "    except Exception:",
+            "        logger.warning('[Feishu] model picker card send failed', exc_info=True)",
+            "        return None",
+        ],
+    )
+
+
+def _model_picker_action_hook(indent: str) -> str:
+    """Render the model_picker branch injected into ``_on_card_action_trigger``.
+
+    Routes ``hfc_action == 'model_picker'`` clicks to
+    ``handle_model_picker_action`` which calls ``on_model_selected`` and
+    returns an inline updated green card.
+    """
+    return _make_hook(
+        indent,
+        MK_MODEL_PICKER_ACTION,
+        MK_MODEL_PICKER_ACTION_END,
+        [
+            "try:",
+            "    if isinstance(action_value, dict) and action_value.get('hfc_action') == 'model_picker':",
+            "        from hermes_lark_streaming.model_picker import handle_model_picker_action as _lark_model_picker_action",
+            "        return _lark_model_picker_action(self, event=event, action_value=action_value, loop=loop)",
+            "except Exception:",
+            "    logger.warning('[Feishu] model picker card action handler failed', exc_info=True)",
+        ],
+    )
+
+
 def _remove_block(content: str, begin: str, end: str) -> str:
     lines = content.splitlines(keepends=True)
     begin_idx = end_idx = None
@@ -677,12 +810,16 @@ class Patcher:
             ("reasoning", "reasoning", _find_reasoning_site(tree, lines)),
             ("background_review", "background_review", _find_background_review_site(tree, lines)),
             ("bg_deliver", "bg_deliver", _find_bg_deliver_site(tree, lines)),
+            ("status", "status", _find_status_heartbeat_site(tree, lines)),
         ]
 
         sites: list[tuple[int, str, str]] = []
         for hook_fn_name, name, loc in hook_defs:
             if loc is None:
-                # 定位失败硬失败，不静默跳过（防位置漂移致重复消息）
+                # status heartbeat is optional — skip silently if anchor not found
+                if hook_fn_name == "status":
+                    _logger.info("Status heartbeat anchor not found, skipping")
+                    continue
                 raise PatcherError(
                     f"Cannot locate {name} injection site — Hermes version may be incompatible"
                 )
@@ -703,6 +840,7 @@ class Patcher:
             "reasoning": _reasoning_hook,
             "background_review": _background_review_hook,
             "bg_deliver": _bg_deliver_hook,
+            "status": _status_hook,
         }
         for idx, indent, fn_name in sites:
             hook = _HOOK_FNS[fn_name](indent)
@@ -828,6 +966,15 @@ def _find_bg_deliver_site(tree: ast.Module, lines: list[str]) -> tuple[int, str]
     return None
 
 
+def _find_status_heartbeat_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    """Locate the injection point in _notify_long_running, right after
+    ``_heartbeat_text = f"⏳ Working ..."`` and before the send/edit block."""
+    for i, line in enumerate(lines):
+        if "_heartbeat_text = f\"⏳ Working" in line:
+            return i + 1, _safe_indent(lines, i)
+    return None
+
+
 def _safe_indent(lines: list[str], lineno: int) -> str:
     """获取缩进，跳过空行."""
     for i in range(lineno, -1, -1):
@@ -899,3 +1046,173 @@ class CronPatcher:
         backup = self.cron_path.with_suffix(self.cron_path.suffix + _BACKUP_SUFFIX)
         if not backup.exists():
             shutil.copy2(self.cron_path, backup)
+
+
+class FeishuAdapterPatcher:
+    """注入 clarify 卡片化 + model picker 到 gateway/platforms/feishu.py。
+
+    四处注入（均幂等、可逆）：
+      1. ``send_clarify`` 方法重写 —— 委托 ``clarify.send_clarify_card`` 发
+         橙头卡片（问题 + 选项按钮 + "其他" 按钮），失败回退 super()。
+      2. ``_on_card_action_trigger`` clarify 分支 —— 按钮点击路由到
+         ``handle_clarify_card_action``，调 ``resolve_gateway_clarify`` 解阻塞。
+      3. ``send_model_picker`` 方法重写 —— 委托 ``model_picker.send_model_picker``
+         发蓝头卡片 + ``select_static`` 下拉选择器。
+      4. ``_on_card_action_trigger`` model_picker 分支 —— 用户选模型后调
+         ``on_model_selected`` 切换模型，返回绿色更新卡片。
+
+    阻塞 / 解析完全由 ``gateway/run.py`` 的 ``_clarify_callback_sync`` +
+    ``tools.clarify_gateway`` 原语处理，本 patch 只改渲染与回调分发。
+    """
+
+    def __init__(self, feishu_path: Path | None = None) -> None:
+        self.feishu_path = feishu_path or _default_feishu_path()
+        if not self.feishu_path.exists():
+            tried = ", ".join(str(r) for r in _code_roots())
+            raise PatcherError(
+                f"gateway/platforms/feishu.py not found: {self.feishu_path} "
+                f"(tried: {tried}). "
+                f"Set HERMES_HOME to the dir containing hermes-agent/ and rerun."
+            )
+
+    def is_patched(self) -> bool:
+        return MK_SEND_CLARIFY in self.feishu_path.read_text(encoding="utf-8")
+
+    def is_fully_patched(self) -> bool:
+        content = self.feishu_path.read_text(encoding="utf-8")
+        return all(
+            mk in content
+            for mk in (
+                MK_SEND_CLARIFY,
+                MK_CLARIFY_ACTION,
+                MK_SEND_MODEL_PICKER,
+                MK_MODEL_PICKER_ACTION,
+            )
+        )
+
+    def verify_target(self) -> None:
+        content = self.feishu_path.read_text(encoding="utf-8")
+        if "async def send_exec_approval(" not in content:
+            raise PatcherError(
+                "Cannot find 'async def send_exec_approval(' anchor in feishu.py — "
+                "Hermes version may be incompatible"
+            )
+        if "def _on_card_action_trigger(" not in content:
+            raise PatcherError(
+                "Cannot find '_on_card_action_trigger' in feishu.py — "
+                "Hermes version may be incompatible"
+            )
+        if "if hermes_action:" not in content:
+            raise PatcherError(
+                "Cannot find 'if hermes_action:' anchor in feishu.py — "
+                "Hermes version may be incompatible"
+            )
+        # If feishu.py already defines its own send_clarify (and we haven't
+        # injected ours), native clarify buttons likely exist — refuse rather
+        # than risk shadowing / being shadowed.
+        if (
+            "async def send_clarify(" in content
+            and MK_SEND_CLARIFY not in content
+        ):
+            raise PatcherError(
+                "feishu.py already defines send_clarify — Hermes may now ship "
+                "native clarify buttons; refusing to inject. Run `uninstall` "
+                "to clean up if needed."
+            )
+
+    def apply(self) -> None:
+        if self.is_fully_patched():
+            return
+        self.verify_target()
+        content = self.feishu_path.read_text(encoding="utf-8")
+        if self.is_patched():
+            # Partial install — strip existing blocks before re-injecting.
+            for begin, end in self._all_block_markers():
+                content = _remove_block(content, begin, end)
+        else:
+            self._backup()
+        content = self._inject_all(content)
+        _atomic_write(self.feishu_path, content)
+
+    def remove(self) -> None:
+        content = self.feishu_path.read_text(encoding="utf-8")
+        has_any = any(
+            mk in content
+            for mk in (
+                MK_SEND_CLARIFY,
+                MK_CLARIFY_ACTION,
+                MK_SEND_MODEL_PICKER,
+                MK_MODEL_PICKER_ACTION,
+            )
+        )
+        if not has_any:
+            return
+        for begin, end in self._all_block_markers():
+            content = _remove_block(content, begin, end)
+        _atomic_write(self.feishu_path, content)
+
+    def restore(self) -> None:
+        backup = self.feishu_path.with_suffix(self.feishu_path.suffix + _BACKUP_SUFFIX)
+        if not backup.exists():
+            raise PatcherError(f"No backup found: {backup}")
+        shutil.copy2(backup, self.feishu_path)
+
+    def _backup(self) -> None:
+        backup = self.feishu_path.with_suffix(self.feishu_path.suffix + _BACKUP_SUFFIX)
+        if not backup.exists():
+            shutil.copy2(self.feishu_path, backup)
+
+    @staticmethod
+    def _all_block_markers() -> list[tuple[str, str]]:
+        return [
+            (MK_SEND_CLARIFY, MK_SEND_CLARIFY_END),
+            (MK_CLARIFY_ACTION, MK_CLARIFY_ACTION_END),
+            (MK_SEND_MODEL_PICKER, MK_SEND_MODEL_PICKER_END),
+            (MK_MODEL_PICKER_ACTION, MK_MODEL_PICKER_ACTION_END),
+        ]
+
+    def _inject_all(self, content: str) -> str:
+        lines = content.splitlines(keepends=True)
+
+        # 1. clarify action branch — before `if hermes_action:`
+        action_idx = None
+        for i, line in enumerate(lines):
+            if line.strip() == "if hermes_action:":
+                action_idx = i
+                break
+        if action_idx is None:
+            raise PatcherError("Cannot find 'if hermes_action:' anchor in feishu.py")
+        action_indent = _safe_indent(lines, action_idx)
+        action_hook = _clarify_action_hook(action_indent)
+
+        # 2. send_clarify method override — before `async def send_exec_approval(`
+        method_idx = None
+        for i, line in enumerate(lines):
+            if line.strip().startswith("async def send_exec_approval("):
+                method_idx = i
+                break
+        if method_idx is None:
+            raise PatcherError("Cannot find 'async def send_exec_approval(' anchor in feishu.py")
+        method_indent = _safe_indent(lines, method_idx)
+        method_hook = _send_clarify_method_hook(method_indent)
+
+        # 3. model_picker action branch — same anchor as clarify action
+        model_action_hook = _model_picker_action_hook(action_indent)
+
+        # 4. send_model_picker method override — same anchor as send_clarify
+        model_method_hook = _send_model_picker_method_hook(method_indent)
+
+        # Insert in descending index order so earlier indices stay valid.
+        # action hooks go at action_idx, method hooks go at method_idx.
+        # Within each anchor, we insert in reverse order of the hooks list.
+        all_hooks = [
+            (action_idx, action_hook),
+            (action_idx, model_action_hook),
+            (method_idx, method_hook),
+            (method_idx, model_method_hook),
+        ]
+        # Sort by index descending; for same index, reverse insertion order
+        all_hooks.sort(key=lambda x: x[0], reverse=True)
+        for idx, hook in all_hooks:
+            lines[idx:idx] = hook.splitlines(keepends=True)
+        return "".join(lines)
