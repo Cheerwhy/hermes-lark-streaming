@@ -246,7 +246,8 @@ class TestHandleClarifyCardAction:
         )
         assert not hasattr(fake_clarify_gateway, "_last_resolve")
 
-    def test_unauthorized_operator_dropped(self, fake_clarify_gateway) -> None:
+    def test_unauthorized_operator_dropped(self, fake_clarify_gateway, monkeypatch) -> None:
+        monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
         adapter = _fake_adapter(authorized=False)
         value = {
             "hermes_clarify": "choose",
@@ -257,6 +258,20 @@ class TestHandleClarifyCardAction:
             adapter, event=_fake_event("ou_evil"), action_value=value, loop=None
         )
         assert not hasattr(fake_clarify_gateway, "_last_resolve")
+
+    def test_allow_all_users_bypasses_auth(self, fake_clarify_gateway, monkeypatch) -> None:
+        """FEISHU_ALLOW_ALL_USERS=true lets non-admin users click clarify."""
+        monkeypatch.setenv("FEISHU_ALLOW_ALL_USERS", "true")
+        adapter = _fake_adapter(authorized=False)
+        value = {
+            "hermes_clarify": "choose",
+            "clarify_id": "c5",
+            "choice": "prod",
+        }
+        clarify.handle_clarify_card_action(
+            adapter, event=_fake_event("ou_guest"), action_value=value, loop=None
+        )
+        assert hasattr(fake_clarify_gateway, "_last_resolve")
 
     def test_unknown_action_dropped(self, fake_clarify_gateway) -> None:
         adapter = _fake_adapter()
