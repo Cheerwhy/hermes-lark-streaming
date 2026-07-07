@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+import os
 
 logger = logging.getLogger("hermes_lark_streaming")
 
@@ -354,14 +355,15 @@ def handle_clarify_card_action(
     # Operator authorisation — same gate as approval/update-prompt.
     operator = getattr(event, "operator", None)
     open_id = str(getattr(operator, "open_id", "") or "")
-    if (
-        hasattr(adapter, "_is_interactive_operator_authorized")
-        and not adapter._is_interactive_operator_authorized(open_id)
-    ):
-        logger.warning(
-            "[Feishu] Unauthorized clarify click by %s", open_id or "<unknown>"
-        )
-        return _empty_response()
+    if os.getenv("FEISHU_ALLOW_ALL_USERS", "").lower() not in {"true", "1", "yes"}:
+        if (
+            hasattr(adapter, "_is_interactive_operator_authorized")
+            and not adapter._is_interactive_operator_authorized(open_id)
+        ):
+            logger.warning(
+                "[Feishu] Unauthorized clarify click by %s", open_id or "<unknown>"
+            )
+            return _empty_response()
 
     # chat_id is in event.context.open_chat_id (same as approval handler)
     chat_id = str(
