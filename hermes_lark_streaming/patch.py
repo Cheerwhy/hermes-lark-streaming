@@ -290,6 +290,7 @@ def on_cron_deliver(
             task_name, chat_id[:12], len(content or ""),
         )
         import asyncio as _asyncio
+
         from hermes_lark_streaming.cardkit.builder import build_cron_card
         from hermes_lark_streaming.feishu import FeishuClient, FeishuClientConfig
 
