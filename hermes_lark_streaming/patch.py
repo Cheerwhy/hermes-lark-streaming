@@ -268,17 +268,57 @@ def on_cron_deliver(
     task_name: str = "",
     run_time: str = "",
 ) -> bool:
-    """[注入点 10] cron 推送 — 包装为飞书卡片发送."""
-    if loop is None:
-        return False
+    """[注入点 10] cron 推送 — 包装为飞书卡片发送.
+
+    兜底修复（chenchen v1）：当 gateway loop 引用失效（loop is None）时，
+    自己起一个临时事件循环 + 临时 FeishuClient 完成卡片发送。避免退化到纯文本。
+    """
     try:
         ctrl = get_controller()
         if not ctrl.enabled:
             return False
-        return bool(ctrl.on_cron_deliver(
-            chat_id=chat_id, content=content, loop=loop,
-            task_name=task_name, run_time=run_time,
-        ))
+        if loop is not None:
+            # 正常路径：委派到 gateway 主 loop
+            return bool(ctrl.on_cron_deliver(
+                chat_id=chat_id, content=content, loop=loop,
+                task_name=task_name, run_time=run_time,
+            ))
+        # ---- 兜底：loop 失效时，自建临时 loop + 临时 client ----
+        _logger.info(
+            "on_cron_deliver: gateway loop unavailable, falling back to standalone card send "
+            "(task=%r chat=%s len=%d)",
+            task_name, chat_id[:12], len(content or ""),
+        )
+        import asyncio as _asyncio
+        from hermes_lark_streaming.cardkit.builder import build_cron_card
+        from hermes_lark_streaming.feishu import FeishuClient, FeishuClientConfig
+
+        cfg = ctrl._cfg
+        app_id = getattr(cfg, "feishu_app_id", None) or getattr(cfg, "env_app_id", None)
+        app_secret = getattr(cfg, "feishu_app_secret", None) or getattr(cfg, "env_app_secret", None)
+        base_url = getattr(cfg, "feishu_base_url", None) or "https://open.feishu.cn"
+        if not app_id or not app_secret:
+            _logger.warning("on_cron_deliver fallback: missing app_id/app_secret in config")
+            return False
+
+        card = build_cron_card(content, task_name=task_name, run_time=run_time)
+
+        async def _send_once() -> None:
+            client = FeishuClient(FeishuClientConfig(
+                app_id=app_id, app_secret=app_secret, base_url=base_url,
+            ))
+            await client.send_card_to_chat(chat_id, card)
+
+        try:
+            _asyncio.run(_send_once())
+            _logger.info(
+                "cron card delivered (standalone fallback): chat=%s len=%d",
+                chat_id[:12], len(content or ""),
+            )
+            return True
+        except Exception as exc:
+            _logger.warning("standalone card fallback failed: %s", exc, exc_info=True)
+            return False
     except Exception as exc:
         _logger.warning("on_cron_deliver error: %s", exc, exc_info=True)
         return False
