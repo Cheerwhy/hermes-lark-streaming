@@ -21,6 +21,7 @@ REASONING_TEXT_ELEMENT_ID = "reasoning_text"
 TOOL_PANEL_ELEMENT_ID = "tool_panel"
 _LOADING_ELEMENT_ID = "loading_icon"
 _LOADING_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
+STATUS_BAR_ELEMENT_ID = "status_bar"
 
 
 def _collapsible_panel(
@@ -103,6 +104,17 @@ def _loading_element() -> dict:
             "size": "16px 16px",
         },
         "element_id": _LOADING_ELEMENT_ID,
+    }
+
+
+def _status_bar_element() -> dict:
+    """Bottom status bar — updated via partial_update_element."""
+    return {
+        "tag": "markdown",
+        "content": " ",
+        "text_size": "notation",
+        "text_color": "grey",
+        "element_id": STATUS_BAR_ELEMENT_ID,
     }
 
 
@@ -429,6 +441,7 @@ def build_streaming_card_v2(
     if show_streaming_element:
         elements.append(_streaming_element(text_size=text_size))
     elements.append(_loading_element())
+    elements.append(_status_bar_element())
 
     card = {
         "schema": "2.0",

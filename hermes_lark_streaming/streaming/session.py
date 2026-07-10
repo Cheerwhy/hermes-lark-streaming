@@ -61,6 +61,8 @@ class CardSession:
         "split_disabled",
         "split_index",
         "state",
+        "status_dirty",
+        "status_text",
         "tool_use",
     )
 
@@ -96,6 +98,8 @@ class CardSession:
         self.image_resolver: ImageResolver | None = None
         self.segment_state: SegmentState | None = SegmentState()
         self.element_count: int = 0
+        self.status_text: str = ""
+        self.status_dirty: bool = False
         self.split_disabled = False
         self.split_index: int = 0
 

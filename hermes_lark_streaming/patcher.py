@@ -34,6 +34,7 @@ _HOOK_NAMES = [
     "ABORT",
     "INTERRUPT",
     "BG_DELIVER",
+    "STATUS",
 ]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
@@ -50,6 +51,7 @@ MK_BACKGROUND_REVIEW, MK_BACKGROUND_REVIEW_END = MARKERS[9]
 MK_ABORT, MK_ABORT_END = MARKERS[10]
 MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[11]
 MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[12]
+MK_STATUS, MK_STATUS_END = MARKERS[13]
 
 _BACKUP_SUFFIX = ".hermes_lark.bak"
 
@@ -530,6 +532,22 @@ def _remove_block(content: str, begin: str, end: str) -> str:
     return content
 
 
+def _status_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_STATUS,
+        MK_STATUS_END,
+        [
+            "try:",
+            "    from hermes_lark_streaming.patch import on_status_heartbeat",
+            "    if on_status_heartbeat(message_id=event_message_id, text=_heartbeat_text):",
+            "        continue",
+            "except Exception:",
+            "    pass",
+        ],
+    )
+
+
 def _atomic_write(path: Path, content: str) -> None:
     """原子写入：先写临时文件再 rename，防止崩溃时文件损坏."""
     tmp_path: Path | None = None
@@ -677,6 +695,7 @@ class Patcher:
             ("reasoning", "reasoning", _find_reasoning_site(tree, lines)),
             ("background_review", "background_review", _find_background_review_site(tree, lines)),
             ("bg_deliver", "bg_deliver", _find_bg_deliver_site(tree, lines)),
+            ("status", "status", _find_status_heartbeat_site(tree, lines)),
         ]
 
         sites: list[tuple[int, str, str]] = []
@@ -703,6 +722,7 @@ class Patcher:
             "reasoning": _reasoning_hook,
             "background_review": _background_review_hook,
             "bg_deliver": _bg_deliver_hook,
+            "status": _status_hook,
         }
         for idx, indent, fn_name in sites:
             hook = _HOOK_FNS[fn_name](indent)
@@ -825,6 +845,24 @@ def _find_bg_deliver_site(tree: ast.Module, lines: list[str]) -> tuple[int, str]
     for i, line in enumerate(lines):
         if line.strip() == "images, text_content = adapter.extract_images(response)":
             return i + 1, _safe_indent(lines, i)
+    return None
+
+
+def _find_status_heartbeat_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+            continue
+        if node.name not in ("_notify_long_running", "_stop_impl"):
+            continue
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Assign)
+                and len(child.targets) == 1
+                and isinstance(child.targets[0], ast.Name)
+                and child.targets[0].id == "_heartbeat_text"
+            ):
+                end = getattr(child, "end_lineno", child.lineno)
+                return end, _safe_indent(lines, child.lineno - 1)
     return None
 
 

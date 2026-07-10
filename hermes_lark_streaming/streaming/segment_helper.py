@@ -6,6 +6,7 @@ from typing import Any
 
 from ..cardkit.builder import (
     _LOADING_ELEMENT_ID,
+    STATUS_BAR_ELEMENT_ID,
     _build_reasoning_panel,
     _build_tool_panel,
     _format_elapsed,
@@ -119,6 +120,19 @@ def build_reasoning_finalized_action(seg: Segment) -> dict[str, Any]:
                         "text_size": "notation",
                     },
                 },
+            },
+        },
+    }
+
+
+def build_update_status_action(content: str) -> dict[str, Any]:
+    """构造 status_bar 局部更新 action."""
+    return {
+        "action": "partial_update_element",
+        "params": {
+            "element_id": STATUS_BAR_ELEMENT_ID,
+            "partial_element": {
+                "content": content,
             },
         },
     }
