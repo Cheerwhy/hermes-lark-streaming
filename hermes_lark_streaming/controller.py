@@ -303,14 +303,26 @@ class StreamCardController(StreamingController):
         message_id = session.message_id
 
         if not await self._wait_for_card_creation(session):
-            _logger.info("on_completed_wait: msg=%s card creation not ready, yielding to gateway", message_id[:12])
-            self._mark_text_fallback_needed(session)
+            if session.has_card:
+                _logger.info(
+                    "on_completed_wait: msg=%s card creation not ready but card exists, suppressing text fallback",
+                    message_id[:12],
+                )
+            else:
+                _logger.info("on_completed_wait: msg=%s card creation not ready, yielding to gateway", message_id[:12])
+                self._mark_text_fallback_needed(session)
             self._cleanup(message_id)
             return False
 
         if session.state == SessionState.FAILED:
-            _logger.info("on_completed_wait: msg=%s state=FAILED, yielding to gateway", message_id[:12])
-            self._mark_text_fallback_needed(session)
+            if session.has_card:
+                _logger.info(
+                    "on_completed_wait: msg=%s state=FAILED but card was delivered, suppressing text fallback",
+                    message_id[:12],
+                )
+            else:
+                _logger.info("on_completed_wait: msg=%s state=FAILED, yielding to gateway", message_id[:12])
+                self._mark_text_fallback_needed(session)
             self._cleanup(message_id)
             return False
 

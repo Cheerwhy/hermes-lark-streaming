@@ -116,10 +116,31 @@ class StreamingController:
                 text_size=self._cfg.body_text_size,
             )
             card_id = await self._client.cardkit_create(card)
-            card_msg_id = await self._client.reply_card_by_id(
-                reply_to_message_id,
-                card_id,
-            )
+
+            # reply_card_by_id with retry for intermittent CARDKIT_CONTENT_FAILED (230099)
+            try:
+                card_msg_id = await self._client.reply_card_by_id(
+                    reply_to_message_id,
+                    card_id,
+                )
+            except FeishuAPIError as reply_err:
+                if reply_err.code == CARDKIT_CONTENT_FAILED:
+                    # Retry: re-create card + reply
+                    card_id = await self._client.cardkit_create(card)
+                    try:
+                        card_msg_id = await self._client.reply_card_by_id(
+                            reply_to_message_id,
+                            card_id,
+                        )
+                    except FeishuAPIError:
+                        # Fallback: send as new message instead of reply
+                        card_msg_id = await self._client.send_card_to_chat(
+                            chat_id=session.chat_id,
+                            card={"type": "card", "data": {"card_id": card_id}},
+                        )
+                else:
+                    raise
+
             session.set_card(card_id=card_id, card_msg_id=card_msg_id)
             session.element_count = 1  # loading element
             session.flush.set_throttle(CARDKIT_MS)
