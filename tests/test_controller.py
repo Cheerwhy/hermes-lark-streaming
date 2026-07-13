@@ -103,6 +103,57 @@ def test_on_interrupted_uses_new_message_id_and_anchor_alias() -> None:
     assert ctrl._sessions["old"].state == SessionState.ABORTED
 
 
+def test_on_interrupted_same_id_creates_replacement_session() -> None:
+    """Internal synthetic events (background delegate_task completion) re-enter
+    with the SAME message_id.  The aborted session must be replaced by a fresh
+    one so the follow-up turn streams to a new card instead of plain text."""
+    ctrl = StreamCardController()
+    _enable(ctrl)
+
+    with patch.object(ctrl, "_fire_and_forget", side_effect=lambda coro, loop: coro.close()):
+        ctrl.on_message_started(message_id="msg", chat_id="chat")
+        old_session = ctrl._sessions["msg"]
+        assert old_session.state == SessionState.IDLE
+
+        ctrl.on_interrupted(
+            old_message_id="msg",
+            new_message_id="msg",
+            chat_id="chat",
+            anchor_id="msg",
+        )
+
+    # Old session is aborted, a NEW session replaced it at the same key.
+    assert old_session.state == SessionState.ABORTED
+    new_session = ctrl._sessions["msg"]
+    assert new_session is not old_session
+    assert new_session.state == SessionState.IDLE
+
+
+def test_cleanup_session_preserves_replacement_session() -> None:
+    """The fire-and-forget finalizer for the OLD session must not pop the NEW
+    session that replaced it at the same key (object identity check)."""
+    ctrl = StreamCardController()
+    _enable(ctrl)
+
+    with patch.object(ctrl, "_fire_and_forget", side_effect=lambda coro, loop: coro.close()):
+        ctrl.on_message_started(message_id="msg", chat_id="chat")
+        old_session = ctrl._sessions["msg"]
+        ctrl.on_interrupted(
+            old_message_id="msg",
+            new_message_id="msg",
+            chat_id="chat",
+            anchor_id="msg",
+        )
+        new_session = ctrl._sessions["msg"]
+
+    # Simulate the old session's fire-and-forget finalizer cleaning up.
+    ctrl._cleanup_session(old_session)
+
+    # The NEW session must survive — only the old session's anchor (if any)
+    # pointing at the old object is removed.
+    assert ctrl._sessions.get("msg") is new_session
+
+
 def test_prune_stale_sessions_ignores_none_key_and_prunes_valid_key() -> None:
     ctrl = StreamCardController()
     stale_session = SimpleNamespace(

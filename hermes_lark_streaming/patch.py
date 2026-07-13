@@ -173,6 +173,16 @@ async def on_queued_followup_boundary(*, ctrl: Any, message_id: str, result: dic
     if sent:
         result["response_previewed"] = True
         result["already_sent"] = True
+        # The card already delivered the full response.  Hermes's drain path
+        # (run.py ~L19752) re-sends ``final_response`` as plain text when the
+        # platform stream consumer didn't confirm delivery — and the lark
+        # plugin intercepts all stream deltas, so the stream consumer never
+        # sees any text.  Clearing ``final_response`` here makes the drain
+        # skip that resend (``first_response`` becomes empty), preventing a
+        # duplicate plain-text message after the finalized card.  The
+        # follow-up turn uses ``result["messages"]`` for history, not
+        # ``final_response``, so this is safe.
+        result["final_response"] = ""
     else:
         ctrl.consume_text_fallback(message_id)
     return sent

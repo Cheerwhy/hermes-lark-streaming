@@ -69,6 +69,7 @@ class StreamingController:
     _cfg: Config
     _ensure_init: Callable[..., Coroutine[Any, Any, None]]
     _cleanup: Callable[[str], None]
+    _cleanup_session: Callable[[CardSession], None]
     _flush_deferred_background_reviews: Callable[[CardSession], None]
 
     def _schedule_flush(self, session: CardSession) -> None:
@@ -581,7 +582,7 @@ class StreamingController:
             return await self._do_complete_card_inner(session)
         finally:
             self._flush_deferred_background_reviews(session)
-            self._cleanup(session.message_id)
+            self._cleanup_session(session)
 
     async def _do_complete_card_inner(self, session: CardSession) -> bool:
         if session.guard.should_skip("_do_complete_card"):

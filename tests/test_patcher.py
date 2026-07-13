@@ -514,9 +514,10 @@ class TestQueuedFollowupHooks:
 
             assert result["response_previewed"] is True
             assert result["already_sent"] is True
+            assert result["final_response"] == ""
 
     @pytest.mark.asyncio
-    async def test_boundary_consumes_fallback_when_card_not_sent(self) -> None:
+    async def test_boundary_keeps_final_response_when_card_not_sent(self) -> None:
         from hermes_lark_streaming.patch import on_queued_followup_boundary
 
         with patch("hermes_lark_streaming.patch.get_controller") as mock_get:
@@ -530,6 +531,7 @@ class TestQueuedFollowupHooks:
 
             ctrl.consume_text_fallback.assert_called_once_with("msg")
             assert "response_previewed" not in result
+            assert result["final_response"] == "plain"
 
     def test_result_hook_preserves_deepest_completion_id(self) -> None:
         from hermes_lark_streaming.patch import on_queued_followup_result

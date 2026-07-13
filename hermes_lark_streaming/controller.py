@@ -262,7 +262,14 @@ class StreamCardController(StreamingController):
             )
             self._complete_session(old_session)
 
-        if new_message_id not in self._sessions:
+        # Create a fresh session for the follow-up turn unless an ACTIVE session
+        # already owns this id.  When new_message_id == old_message_id (internal
+        # synthetic events, e.g. background delegate_task completion re-entering
+        # with the same anchor), the old session was just aborted above and is
+        # terminal — we must replace it so the follow-up turn can stream to a
+        # new card instead of falling through to the plain-text stream consumer.
+        existing = self._sessions.get(new_message_id)
+        if existing is None or existing.state.is_terminal:
             loop = self._get_loop()
             if loop is not None:
                 reply_anchor_id = anchor_id if anchor_id and anchor_id != new_message_id else None
@@ -305,19 +312,19 @@ class StreamCardController(StreamingController):
         if not await self._wait_for_card_creation(session):
             _logger.info("on_completed_wait: msg=%s card creation not ready, yielding to gateway", message_id[:12])
             self._mark_text_fallback_needed(session)
-            self._cleanup(message_id)
+            self._cleanup_session(session)
             return False
 
         if session.state == SessionState.FAILED:
             _logger.info("on_completed_wait: msg=%s state=FAILED, yielding to gateway", message_id[:12])
             self._mark_text_fallback_needed(session)
-            self._cleanup(message_id)
+            self._cleanup_session(session)
             return False
 
         if not session.has_card:
             _logger.info("on_completed_wait: msg=%s has no card, yielding to gateway", message_id[:12])
             self._mark_text_fallback_needed(session)
-            self._cleanup(message_id)
+            self._cleanup_session(session)
             return False
 
         _logger.info(
@@ -427,6 +434,28 @@ class StreamCardController(StreamingController):
         if anchor and self._sessions.get(anchor) is session:
             del self._sessions[anchor]
         stale_keys = [k for k, v in self._interrupt_map.items() if v == message_id]
+        for k in stale_keys:
+            del self._interrupt_map[k]
+        session.flush.mark_completed()
+        if session.image_resolver:
+            session.image_resolver.cancel_pending()
+
+    def _cleanup_session(self, session: CardSession) -> None:
+        """Remove a session's keys using object identity.
+
+        When an internal synthetic event (e.g. background delegate_task
+        completion) re-enters with the same message_id, ``on_interrupted``
+        replaces the aborted session with a fresh one at the same key.  The
+        fire-and-forget finalizer for the OLD session still calls cleanup with
+        the old message_id — without an identity check it would pop the NEW
+        session, breaking the follow-up turn's card.
+        """
+        if self._sessions.get(session.message_id) is session:
+            self._sessions.pop(session.message_id, None)
+        anchor = getattr(session, "anchor_id", None)
+        if anchor and self._sessions.get(anchor) is session:
+            del self._sessions[anchor]
+        stale_keys = [k for k, v in self._interrupt_map.items() if v == session.message_id]
         for k in stale_keys:
             del self._interrupt_map[k]
         session.flush.mark_completed()
