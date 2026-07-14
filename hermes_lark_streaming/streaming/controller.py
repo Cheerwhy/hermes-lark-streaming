@@ -531,6 +531,7 @@ class StreamingController:
             panel_expanded=self._cfg.panel_expanded,
             header_enabled=False,
             body_text_size=self._cfg.body_text_size,
+            show_tool_use=self._cfg.show_tool_use,
         )
 
         try:
@@ -636,6 +637,7 @@ class StreamingController:
             panel_expanded=self._cfg.panel_expanded,
             header_enabled=self._cfg.header_enabled,
             body_text_size=self._cfg.body_text_size,
+            show_tool_use=self._cfg.show_tool_use,
         )
 
         streaming_closed = False

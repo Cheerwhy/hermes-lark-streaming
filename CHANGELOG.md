@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 新增
+
+- `Config.show_tool_use` 配置项：支持平台级（`display.platforms.feishu.show_tool_use`）和全局（`display.show_tool_use`）两级配置，默认 `True`（向后兼容）。在飞书卡片上禁用工具调用面板展示，让最终答复更清爽。
+- `build_complete_card` 新增 `show_tool_use` 参数（默认 `True`），控制完成态卡片是否渲染 TOOL 段的工具面板。
+
+### Added
+
+- `Config.show_tool_use` property with platform-level (`display.platforms.feishu.show_tool_use`) and global (`display.show_tool_use`) fallback. Default `True` for backward compatibility. Disable the tool-use panel on Feishu cards for a cleaner final answer.
+- `build_complete_card` gains a `show_tool_use` parameter (default `True`) that controls whether the TOOL segment renders the tool panel in the completion card.
+
+---
+
 ## [0.11.2] - 2026-07-01
 
 ### 修复

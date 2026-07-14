@@ -478,6 +478,29 @@ class TestBuildSegmentCompleteCard:
         )
         assert not any(e.get("tag") == "collapsible_panel" for e in card["body"]["elements"])
 
+    def test_show_tool_use_false_hides_tool_panel(self) -> None:
+        """show_tool_use=False → TOOL segment rendered as nothing (无工具面板)."""
+        steps = [_STEP_RUNNING, _STEP_SUCCESS]
+        card = build_complete_card(
+            segments=[_seg("tool", tool_offset=0, tool_end_offset=2), _seg("answer", "hello")],
+            all_tool_steps=steps,
+            show_tool_use=False,
+        )
+        # 无 collapsible_panel（工具面板）
+        assert not any(e.get("tag") == "collapsible_panel" for e in card["body"]["elements"])
+        # 但 answer 依然在
+        assert any(e.get("tag") == "markdown" and "hello" in str(e.get("content", ""))
+                   for e in card["body"]["elements"])
+
+    def test_show_tool_use_true_default_shows_panel(self) -> None:
+        """show_tool_use 默认 True → 工具面板保留（向后兼容）."""
+        steps = [_STEP_RUNNING, _STEP_SUCCESS]
+        card = build_complete_card(
+            segments=[_seg("tool", tool_offset=0, tool_end_offset=2)],
+            all_tool_steps=steps,
+        )
+        assert any(e.get("tag") == "collapsible_panel" for e in card["body"]["elements"])
+
     def test_summary_truncated_from_last_answer(self) -> None:
         card = build_complete_card(
             segments=[_seg("answer", "short"), _seg("answer", "x" * 200)],

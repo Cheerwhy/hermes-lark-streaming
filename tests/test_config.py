@@ -221,6 +221,55 @@ class TestShowReasoning:
         assert cfg.show_reasoning is False
 
 
+class TestShowToolUse:
+    def _make_config(self, raw: dict[str, Any]) -> Config:
+        cfg = Config()
+        cfg._reload = lambda: raw  # type: ignore[assignment]
+        return cfg
+
+    def test_platform_level_true(self) -> None:
+        cfg = self._make_config({"display": {"platforms": {"feishu": {"show_tool_use": True}}}})
+        assert cfg.show_tool_use is True
+
+    def test_platform_level_false(self) -> None:
+        cfg = self._make_config({"display": {"platforms": {"feishu": {"show_tool_use": False}}}})
+        assert cfg.show_tool_use is False
+
+    def test_global_fallback_true(self) -> None:
+        cfg = self._make_config({"display": {"show_tool_use": True}})
+        assert cfg.show_tool_use is True
+
+    def test_global_fallback_false(self) -> None:
+        cfg = self._make_config({"display": {"show_tool_use": False}})
+        assert cfg.show_tool_use is False
+
+    def test_default_true(self) -> None:
+        """Missing config → default True (backward compatible)."""
+        cfg = self._make_config({})
+        assert cfg.show_tool_use is True
+
+    def test_display_not_dict(self) -> None:
+        cfg = self._make_config({"display": "invalid"})
+        assert cfg.show_tool_use is True
+
+    def test_platforms_not_dict(self) -> None:
+        cfg = self._make_config({"display": {"platforms": "invalid"}})
+        assert cfg.show_tool_use is True
+
+    def test_feishu_section_missing_key(self) -> None:
+        cfg = self._make_config({"display": {"platforms": {"feishu": {"other": True}}}})
+        assert cfg.show_tool_use is True
+
+    def test_platform_takes_priority_over_global(self) -> None:
+        cfg = self._make_config({
+            "display": {
+                "platforms": {"feishu": {"show_tool_use": False}},
+                "show_tool_use": True,
+            }
+        })
+        assert cfg.show_tool_use is False
+
+
 class TestPlatformCfg:
     def test_env_takes_priority(self) -> None:
         cfg = _make_config({"feishu": {"app_id": "config_id", "app_secret": "config_secret"}})
