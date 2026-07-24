@@ -177,6 +177,7 @@ def _mock_client() -> AsyncMock:
     client = AsyncMock(spec=FeishuClient)
     client.cardkit_create = AsyncMock(return_value="card_id_abc")
     client.reply_card_by_id = AsyncMock(return_value="msg_id_reply")
+    client.send_card_by_id_to_chat = AsyncMock(return_value="msg_id_direct")
     client.cardkit_batch_update = AsyncMock()
     client.cardkit_stream_element = AsyncMock()
     client.cardkit_close_streaming = AsyncMock()
@@ -271,6 +272,21 @@ async def test_create_card_replies_to_anchor_id() -> None:
 
     ctrl._client.reply_card_by_id.assert_called_once()
     assert ctrl._client.reply_card_by_id.call_args.args[0] == "quoted"
+    ctrl._client.send_card_by_id_to_chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_card_without_anchor_sends_directly_to_chat() -> None:
+    ctrl = _setup_ctrl()
+    session = _make_session("msg")
+
+    await ctrl._do_create_card(session)
+
+    ctrl._client.send_card_by_id_to_chat.assert_awaited_once_with(
+        "chat_456",
+        "card_id_abc",
+    )
+    ctrl._client.reply_card_by_id.assert_not_called()
 
 
 def _capture_split_calls(
@@ -296,6 +312,9 @@ def _capture_split_calls(
         client.cardkit_create = AsyncMock(side_effect=create_error)
     client.reply_card_by_id = AsyncMock(
         side_effect=lambda *a, **k: calls.append(("reply", "")) or next(message_iter)
+    )
+    client.send_card_by_id_to_chat = AsyncMock(
+        side_effect=lambda *a, **k: calls.append(("send", "")) or next(message_iter)
     )
     client.cardkit_close_streaming = AsyncMock(
         side_effect=lambda card_id, **k: calls.append(("close", card_id))
@@ -537,7 +556,7 @@ class TestDoFlush:
         assert calls == [
             ("batch", "card_old"),
             ("create", ""),
-            ("reply", ""),
+            ("send", ""),
             ("close", "card_old"),
             ("seal", "card_old"),
             ("batch", "card_next"),
@@ -555,7 +574,7 @@ class TestDoFlush:
         ctrl = _setup_ctrl()
         sealed_cards: list[dict] = []
         ctrl._client.cardkit_create = AsyncMock(return_value="card_page_3")
-        ctrl._client.reply_card_by_id = AsyncMock(return_value="msg_page_3")
+        ctrl._client.send_card_by_id_to_chat = AsyncMock(return_value="msg_page_3")
         ctrl._client.cardkit_update = AsyncMock(
             side_effect=lambda _card_id, card, **_kwargs: sealed_cards.append(card)
         )
@@ -609,7 +628,7 @@ class TestDoFlush:
         assert calls == [
             ("batch", "card_tool_old"),
             ("create", ""),
-            ("reply", ""),
+            ("send", ""),
             ("close", "card_tool_old"),
             ("seal", "card_tool_old"),
             ("batch", "card_tool_next"),
@@ -652,7 +671,7 @@ class TestDoFlush:
         assert calls == [
             ("batch", "card_tool_pending_old"),
             ("create", ""),
-            ("reply", ""),
+            ("send", ""),
             ("close", "card_tool_pending_old"),
             ("seal", "card_tool_pending_old"),
             ("batch", "card_tool_pending_next"),
@@ -691,12 +710,12 @@ class TestDoFlush:
         assert calls == [
             ("batch", "card_tool_page_1"),
             ("create", ""),
-            ("reply", ""),
+            ("send", ""),
             ("close", "card_tool_page_1"),
             ("seal", "card_tool_page_1"),
             ("batch", "card_tool_page_2"),
             ("create", ""),
-            ("reply", ""),
+            ("send", ""),
             ("close", "card_tool_page_2"),
             ("seal", "card_tool_page_2"),
             ("batch", "card_tool_page_3"),

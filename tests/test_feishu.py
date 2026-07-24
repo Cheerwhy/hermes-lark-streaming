@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -110,6 +111,24 @@ async def test_reply_card_by_id_retries_gateway_timeout_once() -> None:
     second_request = reply.await_args_list[1].args[0]
     assert first_request.request_body.uuid
     assert second_request.request_body.uuid == first_request.request_body.uuid
+
+
+@pytest.mark.asyncio
+async def test_send_card_by_id_to_chat_creates_non_reply_message() -> None:
+    create = AsyncMock(
+        return_value=_Resp(ok=True, data=SimpleNamespace(message_id="msg-ok"))
+    )
+    client = _client_with(create_message=create)
+
+    assert await client.send_card_by_id_to_chat("chat", "card") == "msg-ok"
+
+    request = create.await_args.args[0]
+    assert request.receive_id_type == "chat_id"
+    assert request.request_body.receive_id == "chat"
+    assert json.loads(request.request_body.content) == {
+        "type": "card",
+        "data": {"card_id": "card"},
+    }
 
 
 @pytest.mark.asyncio

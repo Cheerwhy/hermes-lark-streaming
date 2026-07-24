@@ -95,6 +95,13 @@ class StreamingController:
         self._schedule_flush(session)
         return True
 
+    async def _deliver_card_by_id(self, session: CardSession, card_id: str) -> str:
+        """普通消息直接发送；真实引用或话题消息保留回复关系."""
+        assert self._client is not None
+        if session.anchor_id:
+            return await self._client.reply_card_by_id(session.anchor_id, card_id)
+        return await self._client.send_card_by_id_to_chat(session.chat_id, card_id)
+
     async def _do_create_card(self, session: CardSession) -> None:
         """创建只有 loading 的流式占位卡片."""
         if session.state != SessionState.IDLE:
@@ -107,7 +114,6 @@ class StreamingController:
             await self._ensure_init()
             assert self._client is not None
 
-            reply_to_message_id = session.anchor_id or session.message_id
             card = build_streaming_card_v2(
                 show_tool_use=False,
                 show_reasoning=False,
@@ -116,10 +122,7 @@ class StreamingController:
                 text_size=self._cfg.body_text_size,
             )
             card_id = await self._client.cardkit_create(card)
-            card_msg_id = await self._client.reply_card_by_id(
-                reply_to_message_id,
-                card_id,
-            )
+            card_msg_id = await self._deliver_card_by_id(session, card_id)
             session.set_card(card_id=card_id, card_msg_id=card_msg_id)
             session.element_count = 1  # loading element
             session.flush.set_throttle(CARDKIT_MS)
@@ -526,7 +529,7 @@ class StreamingController:
                 text_size=self._cfg.body_text_size,
             )
             new_card_id = await self._client.cardkit_create(card)
-            new_msg_id = await self._client.reply_card_by_id(session.anchor_id or session.message_id, new_card_id)
+            new_msg_id = await self._deliver_card_by_id(session, new_card_id)
         except Exception:
             _logger.warning(
                 "CardKit split fallback: create next card failed, continue on current card",

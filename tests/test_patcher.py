@@ -235,10 +235,12 @@ class TestApplyRemove:
         assert "source = event.source\n        # HERMES_LARK_NORMALIZE_BEGIN" in content
         assert "on_feishu_normalize(" in content
         assert "on_message_started(" in content
-        assert "_lark_anchor_id = self._reply_anchor_for_event(event)" in content
+        assert "_lark_anchor_id = getattr(event, 'reply_to_message_id', None)" in content
+        assert "if not _lark_anchor_id and getattr(source, 'thread_id', None):" in content
         assert "message_id=event.message_id" in content
         assert "anchor_id=_lark_anchor_id" in content
         assert "_lark_next_message_id = getattr(pending_event, 'message_id', None) or next_message_id" in content
+        assert "_lark_next_anchor_id = getattr(pending_event, 'reply_to_message_id', None)" in content
         assert "new_message_id=_lark_next_message_id" in content
         assert "anchor_id=_lark_next_anchor_id" in content
         assert "# HERMES_LARK_FOLLOWUP_COMPLETE_BEGIN" in content
