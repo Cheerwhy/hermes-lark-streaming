@@ -11,6 +11,7 @@ import shutil
 import textwrap
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -251,6 +252,7 @@ class TestApplyRemove:
         assert "on_message_completed_wait(" in content
         assert "on_message_needs_text_fallback" in content
         assert "_lark_card_sent = await on_message_completed_wait(" in content
+        assert "restore_message_id_for_text_fallback(event=event)" in content
         assert "agent_result.pop('already_sent', None)" in content
         assert "_lark_completion_id = agent_result.get('_hermes_lark_completion_id') or event.message_id" in content
         assert "message_id=_lark_completion_id" in content
@@ -545,3 +547,117 @@ class TestQueuedFollowupHooks:
             on_queued_followup_result(message_id="outer", followup_result=result)
 
             assert result["_hermes_lark_completion_id"] == "deep"
+
+
+class TestInternalMessageIdentity:
+    @staticmethod
+    def _source(platform: str = "feishu") -> SimpleNamespace:
+        return SimpleNamespace(
+            platform=SimpleNamespace(value=platform),
+            chat_id="oc_test",
+            thread_id=None,
+            user_id="ou_test",
+        )
+
+    def test_assigns_delegation_id_to_internal_feishu_turn(self) -> None:
+        from hermes_lark_streaming.patch import on_feishu_normalize
+
+        event = SimpleNamespace(
+            message_id=None,
+            internal=True,
+            text="[ASYNC DELEGATION BATCH COMPLETE — deleg_8f17c523]\nDone.",
+            metadata={"gateway_session_id": "session-1"},
+            raw_message=None,
+            reply_to_message_id=None,
+        )
+        source = self._source()
+
+        with patch("hermes_lark_streaming.patch.get_controller") as mock_get:
+            mock_get.return_value.enabled = True
+            on_feishu_normalize(message_id=None, source=source, event=event)
+
+        assert event.message_id == "hermes_lark_internal_deleg_8f17c523"
+        assert event._hermes_lark_synthetic_message_id == event.message_id
+        assert event._hermes_lark_original_message_id is None
+
+    def test_hash_identity_is_stable_for_other_internal_turns(self) -> None:
+        from hermes_lark_streaming.patch import on_feishu_normalize
+
+        def make_event() -> SimpleNamespace:
+            return SimpleNamespace(
+                message_id=None,
+                internal=True,
+                text="[PROCESS COMPLETE] result",
+                metadata={"gateway_session_id": "session-1"},
+                raw_message=None,
+                reply_to_message_id=None,
+            )
+
+        first = make_event()
+        second = make_event()
+        source = self._source()
+        with patch("hermes_lark_streaming.patch.get_controller") as mock_get:
+            mock_get.return_value.enabled = True
+            on_feishu_normalize(message_id=None, source=source, event=first)
+            on_feishu_normalize(message_id=None, source=source, event=second)
+
+        assert first.message_id == second.message_id
+        assert first.message_id.startswith("hermes_lark_internal_")
+
+    def test_does_not_assign_id_to_external_turn(self) -> None:
+        from hermes_lark_streaming.patch import on_feishu_normalize
+
+        event = SimpleNamespace(
+            message_id=None,
+            internal=False,
+            text="hello",
+            metadata={},
+            raw_message=None,
+            reply_to_message_id=None,
+        )
+        with patch("hermes_lark_streaming.patch.get_controller") as mock_get:
+            mock_get.return_value.enabled = True
+            on_feishu_normalize(message_id=None, source=self._source(), event=event)
+
+        assert event.message_id is None
+        assert not hasattr(event, "_hermes_lark_synthetic_message_id")
+
+    def test_preserves_existing_platform_message_id(self) -> None:
+        from hermes_lark_streaming.patch import on_feishu_normalize
+
+        event = SimpleNamespace(
+            message_id="om_real",
+            internal=True,
+            text="[PROCESS COMPLETE] result",
+            metadata={},
+            raw_message=None,
+            reply_to_message_id=None,
+        )
+        with patch("hermes_lark_streaming.patch.get_controller") as mock_get:
+            mock_get.return_value.enabled = True
+            on_feishu_normalize(message_id="om_real", source=self._source(), event=event)
+
+        assert event.message_id == "om_real"
+        assert not hasattr(event, "_hermes_lark_synthetic_message_id")
+
+    def test_restores_missing_id_before_plain_text_fallback(self) -> None:
+        from hermes_lark_streaming.patch import (
+            on_feishu_normalize,
+            restore_message_id_for_text_fallback,
+        )
+
+        event = SimpleNamespace(
+            message_id=None,
+            internal=True,
+            text="[PROCESS COMPLETE] result",
+            metadata={},
+            raw_message=None,
+            reply_to_message_id=None,
+        )
+        with patch("hermes_lark_streaming.patch.get_controller") as mock_get:
+            mock_get.return_value.enabled = True
+            on_feishu_normalize(message_id=None, source=self._source(), event=event)
+
+        restore_message_id_for_text_fallback(event=event)
+
+        assert event.message_id is None

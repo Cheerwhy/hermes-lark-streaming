@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from collections.abc import Callable
 from functools import wraps
 from inspect import iscoroutinefunction
@@ -15,6 +17,63 @@ from typing import Any
 from .controller import get_controller
 
 _logger = logging.getLogger("hermes_lark_streaming")
+
+_SYNTHETIC_MESSAGE_ID_ATTR = "_hermes_lark_synthetic_message_id"
+_ORIGINAL_MESSAGE_ID_ATTR = "_hermes_lark_original_message_id"
+_DELEGATION_ID_RE = re.compile(
+    r"\[ASYNC DELEGATION(?: BATCH)? COMPLETE\s+[—-]\s+(deleg_[A-Za-z0-9_-]+)\]",
+    re.IGNORECASE,
+)
+
+
+def _ensure_internal_message_id(*, event: Any, source: Any) -> str | None:
+    """Give Hermes-internal Feishu turns a stable CardSession identity."""
+    existing = str(getattr(event, "message_id", "") or "").strip()
+    if existing:
+        return existing
+    if not getattr(event, "internal", False):
+        return None
+
+    platform = str(getattr(getattr(source, "platform", None), "value", "") or "").lower()
+    if platform not in {"feishu", "lark"}:
+        return None
+
+    text = str(getattr(event, "text", "") or "")
+    delegation_match = _DELEGATION_ID_RE.search(text)
+    if delegation_match:
+        identity = delegation_match.group(1)
+    else:
+        metadata = getattr(event, "metadata", None)
+        gateway_session_id = ""
+        if isinstance(metadata, dict):
+            gateway_session_id = str(metadata.get("gateway_session_id") or "")
+        seed = "\n".join(
+            (
+                platform,
+                str(getattr(source, "chat_id", "") or ""),
+                str(getattr(source, "thread_id", "") or ""),
+                str(getattr(source, "user_id", "") or ""),
+                gateway_session_id,
+                text,
+            )
+        )
+        identity = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
+
+    synthetic_id = f"hermes_lark_internal_{identity}"
+    setattr(event, _ORIGINAL_MESSAGE_ID_ATTR, getattr(event, "message_id", None))
+    setattr(event, _SYNTHETIC_MESSAGE_ID_ATTR, synthetic_id)
+    event.message_id = synthetic_id
+    _logger.info("assigned synthetic Feishu message id: %s", synthetic_id)
+    return synthetic_id
+
+
+def restore_message_id_for_text_fallback(*, event: Any) -> None:
+    """Prevent a plugin-only identity from reaching Feishu's reply API."""
+    synthetic_id = getattr(event, _SYNTHETIC_MESSAGE_ID_ATTR, None)
+    if not synthetic_id or getattr(event, "message_id", None) != synthetic_id:
+        return
+    event.message_id = getattr(event, _ORIGINAL_MESSAGE_ID_ATTR, None)
+    _logger.info("restored original Feishu message id before text fallback: %s", synthetic_id)
 
 
 def _safe_hook(
@@ -57,7 +116,7 @@ def _safe_hook(
 
 def on_feishu_normalize(
     *,
-    message_id: str,
+    message_id: str | None,
     source: Any,
     event: Any,
     reply_anchor_id: str | None = None,
@@ -68,9 +127,10 @@ def on_feishu_normalize(
         if not ctrl.enabled:
             return
 
-        platform = getattr(getattr(source, "platform", None), "value", "")
-        if platform != "feishu":
+        platform = str(getattr(getattr(source, "platform", None), "value", "") or "").lower()
+        if platform not in {"feishu", "lark"}:
             return
+        message_id = _ensure_internal_message_id(event=event, source=source) or message_id
 
         raw = getattr(event, "raw_message", None)
         raw_event = raw.get("event") if isinstance(raw, dict) else None
