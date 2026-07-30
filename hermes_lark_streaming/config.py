@@ -9,22 +9,36 @@ from typing import Any
 import yaml
 
 DEFAULT_DOMAIN = "https://open.feishu.cn"  # SDK 根域名，Larksuite 用 https://open.larksuite.com
+LARK_DOMAIN = "https://open.larksuite.com"
 
 
 def hermes_home() -> Path:
     """Hermes 主目录，优先级 HERMES_HOME 环境变量 → ~/.hermes."""
-    return Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    try:
+        from hermes_constants import get_hermes_home  # type: ignore[import-not-found]
+    except ImportError:
+        return Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    return Path(get_hermes_home())
 
 
-def _config_path() -> Path:
-    """Hermes 主配置路径，惰性计算以响应运行时 HERMES_HOME 变化."""
-    return hermes_home() / "config.yaml"
+def _get_secret(name: str) -> str:
+    try:
+        from agent.secret_scope import get_secret  # type: ignore[import-not-found]
+    except ImportError:
+        return os.environ.get(name, "")
+    return get_secret(name, "") or ""
+
+
+def _config_path(home: Path | None = None) -> Path:
+    """Hermes 主配置路径，支持绑定到指定 profile home."""
+    return (home or hermes_home()) / "config.yaml"
 
 
 class Config:
     """插件配置，惰性读取 Hermes 主配置."""
 
-    def __init__(self) -> None:
+    def __init__(self, home: Path | None = None) -> None:
+        self._home = Path(home) if home is not None else None
         self._raw: dict[str, Any] | None = None
 
     @property
@@ -138,11 +152,11 @@ class Config:
 
     @property
     def env_app_id(self) -> str:
-        return os.environ.get("FEISHU_APP_ID") or os.environ.get("LARK_APP_ID") or ""
+        return _get_secret("FEISHU_APP_ID") or _get_secret("LARK_APP_ID")
 
     @property
     def env_app_secret(self) -> str:
-        return os.environ.get("FEISHU_APP_SECRET") or os.environ.get("LARK_APP_SECRET") or ""
+        return _get_secret("FEISHU_APP_SECRET") or _get_secret("LARK_APP_SECRET")
 
     def _streaming_sec(self) -> dict[str, Any]:
         raw = self._load()
@@ -157,22 +171,43 @@ class Config:
             return {
                 "app_id": self.env_app_id,
                 "app_secret": self.env_app_secret,
-                "base_url": os.environ.get(
-                    "FEISHU_BASE_URL",
-                    os.environ.get("LARK_BASE_URL", DEFAULT_DOMAIN),
-                ),
+                "base_url": _get_secret("FEISHU_BASE_URL") or _get_secret("LARK_BASE_URL") or DEFAULT_DOMAIN,
             }
         raw = self._load()
         for key in ("feishu", "lark"):
             pf = raw.get(key)
             if isinstance(pf, dict) and pf.get("app_id"):
                 return pf
+        gateway = raw.get("gateway")
+        candidate_parents: list[dict[str, Any]] = []
+        if isinstance(gateway, dict) and isinstance(gateway.get("platforms"), dict):
+            candidate_parents.append(gateway["platforms"])
+        platforms = raw.get("platforms")
+        if isinstance(platforms, dict):
+            candidate_parents.append(platforms)
+        for parent in candidate_parents:
+            for key in ("feishu", "lark"):
+                platform = parent.get(key)
+                if not isinstance(platform, dict):
+                    continue
+                extra = platform.get("extra")
+                if not isinstance(extra, dict) or not extra.get("app_id"):
+                    continue
+                result = dict(extra)
+                if "base_url" in platform and "base_url" not in result:
+                    result["base_url"] = platform["base_url"]
+                if (
+                    "base_url" not in result
+                    and str(extra.get("domain", platform.get("domain", ""))).lower() == "lark"
+                ):
+                    result["base_url"] = LARK_DOMAIN
+                return result
         return {}
 
     def _load(self) -> dict[str, Any]:
         if self._raw is not None:
             return self._raw
-        path = _config_path()
+        path = _config_path(self._home)
         if path.exists():
             text = path.read_text(encoding="utf-8")
             self._raw = yaml.safe_load(text) or {}
@@ -182,7 +217,7 @@ class Config:
 
     def _reload(self) -> dict[str, Any]:
         """从磁盘重新读取配置（不更新缓存），供运行时可变的配置项使用."""
-        path = _config_path()
+        path = _config_path(self._home)
         if path.exists():
             text = path.read_text(encoding="utf-8")
             return yaml.safe_load(text) or {}

@@ -6,11 +6,13 @@ import asyncio
 import logging
 import threading
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterator
 from concurrent.futures import Future as ConcurrentFuture
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
-from .config import Config
+from .config import Config, hermes_home
 from .feishu import (
     FeishuClient,
     FeishuClientConfig,
@@ -27,8 +29,9 @@ _CARD_CREATION_WAIT_SEC = 10.0
 class StreamCardController(StreamingController):
     """流式卡片控制器 — 管理多条消息的卡片生命周期."""
 
-    def __init__(self) -> None:
-        self._cfg = Config()
+    def __init__(self, profile_home: Path | None = None) -> None:
+        self._profile_home = (profile_home or hermes_home()).resolve()
+        self._cfg = Config(self._profile_home)
         self._client: FeishuClient | None = None
         self._sessions: dict[str, CardSession] = {}
         self._session_keys: dict[str, CardSession] = {}
@@ -39,10 +42,48 @@ class StreamCardController(StreamingController):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._text_fallback_needed: set[str] = set()
         self._text_fallback_aliases: dict[str, set[str]] = {}
+        self._unscoped_enabled: bool | None = None
 
     @property
     def enabled(self) -> bool:
-        return self._cfg.enabled and bool(self._cfg.feishu_app_id or self._cfg.env_app_id)
+        unscoped = self._needs_fallback_scope()
+        if unscoped and self._unscoped_enabled is not None:
+            return self._unscoped_enabled
+        with self._credential_scope():
+            enabled = self._cfg.enabled and bool(self._cfg.feishu_app_id or self._cfg.env_app_id)
+        if unscoped and enabled:
+            self._unscoped_enabled = True
+        return enabled
+
+    @staticmethod
+    def _needs_fallback_scope() -> bool:
+        try:
+            from agent.secret_scope import current_secret_scope, is_multiplex_active  # type: ignore[import-not-found]
+        except ImportError:
+            return False
+        return is_multiplex_active() and current_secret_scope() is None
+
+    @contextmanager
+    def _credential_scope(self) -> Iterator[None]:
+        try:
+            from agent.secret_scope import (  # type: ignore[import-not-found]
+                build_profile_secret_scope,
+                current_secret_scope,
+                is_multiplex_active,
+                reset_secret_scope,
+                set_secret_scope,
+            )
+        except ImportError:
+            yield
+            return
+        if not is_multiplex_active() or current_secret_scope() is not None:
+            yield
+            return
+        token = set_secret_scope(build_profile_secret_scope(self._profile_home))
+        try:
+            yield
+        finally:
+            reset_secret_scope(token)
 
     async def _ensure_init(self) -> None:
         if self._initialized:
@@ -50,17 +91,18 @@ class StreamCardController(StreamingController):
         with self._init_lock:
             if self._initialized:
                 return
-            app_id = self._cfg.feishu_app_id or self._cfg.env_app_id
-            app_secret = self._cfg.feishu_app_secret or self._cfg.env_app_secret
-            if not app_id or not app_secret:
-                raise RuntimeError("feishu credentials not configured")
-            self._client = FeishuClient(
-                FeishuClientConfig(
-                    app_id=app_id,
-                    app_secret=app_secret,
-                    base_url=self._cfg.feishu_base_url,
+            with self._credential_scope():
+                app_id = self._cfg.feishu_app_id or self._cfg.env_app_id
+                app_secret = self._cfg.feishu_app_secret or self._cfg.env_app_secret
+                if not app_id or not app_secret:
+                    raise RuntimeError("feishu credentials not configured")
+                self._client = FeishuClient(
+                    FeishuClientConfig(
+                        app_id=app_id,
+                        app_secret=app_secret,
+                        base_url=self._cfg.feishu_base_url,
+                    )
                 )
-            )
             self._initialized = True
 
     def _get_loop(self) -> asyncio.AbstractEventLoop | None:
@@ -573,13 +615,16 @@ class StreamCardController(StreamingController):
             _logger.warning("background task failed", exc_info=True)
 
 
-_controller: StreamCardController | None = None
+_controllers: dict[str, StreamCardController] = {}
 _controller_lock = threading.Lock()
 
 
 def get_controller() -> StreamCardController:
-    global _controller
+    profile_home = hermes_home().resolve()
+    key = str(profile_home)
     with _controller_lock:
-        if _controller is None:
-            _controller = StreamCardController()
-        return _controller
+        controller = _controllers.get(key)
+        if controller is None:
+            controller = StreamCardController(profile_home)
+            _controllers[key] = controller
+        return controller
