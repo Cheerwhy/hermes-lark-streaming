@@ -325,7 +325,8 @@ class StreamCardController(StreamingController):
             )
             self._complete_session(old_session)
 
-        if new_message_id not in self._sessions:
+        existing = self._sessions.get(new_message_id)
+        if existing is None or existing.state.is_terminal:
             loop = self._get_loop()
             if loop is not None:
                 reply_anchor_id = anchor_id if anchor_id and anchor_id != new_message_id else None
@@ -370,21 +371,27 @@ class StreamCardController(StreamingController):
         message_id = session.message_id
 
         if not await self._wait_for_card_creation(session):
-            _logger.info("on_completed_wait: msg=%s card creation not ready, yielding to gateway", message_id[:12])
-            self._mark_text_fallback_needed(session)
-            self._cleanup(message_id)
+            if session.has_card:
+                _logger.info("on_completed_wait: msg=%s card creation not ready but card exists", message_id[:12])
+            else:
+                _logger.info("on_completed_wait: msg=%s card creation not ready, yielding to gateway", message_id[:12])
+                self._mark_text_fallback_needed(session)
+            self._cleanup_session(session)
             return False
 
         if session.state == SessionState.FAILED:
-            _logger.info("on_completed_wait: msg=%s state=FAILED, yielding to gateway", message_id[:12])
-            self._mark_text_fallback_needed(session)
-            self._cleanup(message_id)
+            if session.has_card:
+                _logger.info("on_completed_wait: msg=%s state=FAILED but card exists", message_id[:12])
+            else:
+                _logger.info("on_completed_wait: msg=%s state=FAILED, yielding to gateway", message_id[:12])
+                self._mark_text_fallback_needed(session)
+            self._cleanup_session(session)
             return False
 
         if not session.has_card:
             _logger.info("on_completed_wait: msg=%s has no card, yielding to gateway", message_id[:12])
             self._mark_text_fallback_needed(session)
-            self._cleanup(message_id)
+            self._cleanup_session(session)
             return False
 
         _logger.info(
@@ -513,6 +520,22 @@ class StreamCardController(StreamingController):
         if session.image_resolver:
             session.image_resolver.cancel_pending()
 
+    def _cleanup_session(self, session: CardSession) -> None:
+        if self._sessions.get(session.message_id) is session:
+            self._sessions.pop(session.message_id, None)
+        anchor = session.anchor_id
+        if anchor and self._sessions.get(anchor) is session:
+            del self._sessions[anchor]
+        session_key = session.session_key
+        if session_key and self._session_keys.get(session_key) is session:
+            del self._session_keys[session_key]
+        stale_keys = [key for key, value in self._interrupt_map.items() if value == session.message_id]
+        for key in stale_keys:
+            del self._interrupt_map[key]
+        session.flush.mark_completed()
+        if session.image_resolver:
+            session.image_resolver.cancel_pending()
+
     def _completion_session(self, message_id: str) -> CardSession | None:
         session = self._sessions.get(message_id)
         if session is not None and (not session.state.is_terminal or session.state == SessionState.FAILED):
@@ -589,7 +612,7 @@ class StreamCardController(StreamingController):
 
     async def _complete_session_after_creation(self, session: CardSession) -> bool:
         if not await self._wait_for_card_creation(session):
-            self._cleanup(session.message_id)
+            self._cleanup_session(session)
             return False
         return await self._complete_session_wait(session)
 

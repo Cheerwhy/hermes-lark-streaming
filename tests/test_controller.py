@@ -195,6 +195,30 @@ def test_on_interrupted_uses_new_message_id_and_anchor_alias() -> None:
     assert ctrl._session_keys["session:chat"] is session
 
 
+def test_on_interrupted_same_id_replaces_terminal_session() -> None:
+    ctrl = StreamCardController()
+    _enable(ctrl)
+
+    with patch.object(ctrl, "_fire_and_forget", side_effect=lambda coro, loop: coro.close()):
+        ctrl.on_message_started(message_id="msg", chat_id="chat")
+        old_session = ctrl._sessions["msg"]
+        ctrl.on_interrupted(
+            old_message_id="msg",
+            new_message_id="msg",
+            chat_id="chat",
+            anchor_id="msg",
+        )
+
+    new_session = ctrl._sessions["msg"]
+    assert old_session.state == SessionState.ABORTED
+    assert new_session is not old_session
+    assert new_session.state == SessionState.IDLE
+
+    ctrl._cleanup_session(old_session)
+
+    assert ctrl._sessions["msg"] is new_session
+
+
 @pytest.mark.asyncio
 async def test_on_session_aborted_only_stops_matching_session_key() -> None:
     ctrl = StreamCardController()
@@ -645,6 +669,55 @@ class TestDoCreateCard:
         assert session.segment_state is not None
         assert session.card_id == "card_id_abc"
         assert session.state == SessionState.STREAMING
+
+    @pytest.mark.asyncio
+    async def test_content_failure_recreates_card_and_retries_reply(self) -> None:
+        ctrl = _setup_ctrl()
+        ctrl._client.cardkit_create = AsyncMock(side_effect=["card_first", "card_second"])
+        ctrl._client.reply_card_by_id = AsyncMock(
+            side_effect=[FeishuAPIError("invalid card", code=230099), "reply_second"]
+        )
+        session = _make_session("msg_retry")
+
+        await ctrl._do_create_card(session)
+
+        assert session.card_id == "card_second"
+        assert session.card_msg_id == "reply_second"
+        assert ctrl._client.cardkit_create.await_count == 2
+        assert ctrl._client.reply_card_by_id.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_content_failure_uses_standalone_card_after_retry_fails(self) -> None:
+        ctrl = _setup_ctrl()
+        ctrl._client.cardkit_create = AsyncMock(side_effect=["card_first", "card_second"])
+        ctrl._client.reply_card_by_id = AsyncMock(side_effect=FeishuAPIError("invalid card", code=230099))
+        ctrl._client.send_card_to_chat = AsyncMock(return_value="standalone_reply")
+        session = _make_session("msg_standalone")
+
+        await ctrl._do_create_card(session)
+
+        assert session.card_id == "card_second"
+        assert session.card_msg_id == "standalone_reply"
+        ctrl._client.send_card_to_chat.assert_awaited_once_with(
+            chat_id="chat_456",
+            card={"type": "card", "data": {"card_id": "card_second"}},
+        )
+
+    @pytest.mark.asyncio
+    async def test_standalone_card_completion_does_not_require_text_fallback(self) -> None:
+        ctrl = _setup_ctrl()
+        ctrl._client.cardkit_create = AsyncMock(side_effect=["card_first", "card_second"])
+        ctrl._client.reply_card_by_id = AsyncMock(side_effect=FeishuAPIError("invalid card", code=230099))
+        ctrl._client.send_card_to_chat = AsyncMock(return_value="standalone_reply")
+        session = _make_session("msg_standalone_complete")
+        ctrl._sessions[session.message_id] = session
+
+        await ctrl._do_create_card(session)
+
+        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
+            assert await ctrl.on_completed_wait(message_id=session.message_id, answer="answer") is True
+
+        assert ctrl.consume_text_fallback(session.message_id) is False
 
     @pytest.mark.asyncio
     async def test_cardkit_failure_yields_to_gateway(self) -> None:
