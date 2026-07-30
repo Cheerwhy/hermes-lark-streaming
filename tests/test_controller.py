@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from hermes_lark_streaming.controller import StreamCardController
+import hermes_lark_streaming.controller as controller_module
+from hermes_lark_streaming.controller import StreamCardController, get_controller
 from hermes_lark_streaming.feishu import FeishuAPIError, FeishuClient
 from hermes_lark_streaming.streaming.segment_helper import estimate_segment_elements
 from hermes_lark_streaming.streaming.segments import Segment, SegmentState
@@ -23,6 +25,79 @@ def _enable(ctrl: StreamCardController) -> None:
         "feishu": {"app_id": "app", "app_secret": "secret"},
     }
     _set_cached_loop(ctrl)
+
+
+def test_get_controller_returns_one_instance_per_profile_home(tmp_path) -> None:
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    home_a.mkdir()
+    home_b.mkdir()
+
+    with patch.object(controller_module, "_controllers", {}), patch(
+        "hermes_lark_streaming.controller.hermes_home",
+        side_effect=[home_a, home_b, home_a],
+    ):
+        controller_a = get_controller()
+        controller_b = get_controller()
+        controller_a_again = get_controller()
+
+    assert controller_a is controller_a_again
+    assert controller_a is not controller_b
+    assert controller_a._profile_home == home_a.resolve()
+    assert controller_b._profile_home == home_b.resolve()
+
+
+def test_enabled_caches_unscoped_fallback_result() -> None:
+    ctrl = StreamCardController()
+    ctrl._cfg = MagicMock()
+    ctrl._cfg.enabled = True
+    ctrl._cfg.feishu_app_id = "app-id"
+
+    with patch.object(ctrl, "_needs_fallback_scope", return_value=True), patch.object(
+        ctrl, "_credential_scope", side_effect=lambda: nullcontext()
+    ) as credential_scope:
+        assert ctrl.enabled is True
+        assert ctrl.enabled is True
+
+    credential_scope.assert_called_once()
+
+
+def test_enabled_retries_unsuccessful_unscoped_fallback() -> None:
+    ctrl = StreamCardController()
+    ctrl._cfg = MagicMock()
+    ctrl._cfg.enabled = True
+    ctrl._cfg.feishu_app_id = ""
+    ctrl._cfg.env_app_id = ""
+
+    with patch.object(ctrl, "_needs_fallback_scope", return_value=True), patch.object(
+        ctrl, "_credential_scope", side_effect=lambda: nullcontext()
+    ) as credential_scope:
+        assert ctrl.enabled is False
+        ctrl._cfg.feishu_app_id = "app-id"
+        assert ctrl.enabled is True
+
+    assert credential_scope.call_count == 2
+
+
+def test_enabled_uses_and_restores_profile_secret_scope(tmp_path) -> None:
+    from agent.secret_scope import current_secret_scope, is_multiplex_active, set_multiplex_active
+
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    (profile_home / "config.yaml").write_text("streaming:\n  enabled: true\n", encoding="utf-8")
+    (profile_home / ".env").write_text(
+        "FEISHU_APP_ID=profile-app\nFEISHU_APP_SECRET=profile-secret\n",
+        encoding="utf-8",
+    )
+    ctrl = StreamCardController(profile_home)
+    was_multiplexed = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        assert current_secret_scope() is None
+        assert ctrl.enabled is True
+        assert current_secret_scope() is None
+    finally:
+        set_multiplex_active(was_multiplexed)
 
 
 def _set_cached_loop(ctrl: StreamCardController) -> asyncio.AbstractEventLoop:

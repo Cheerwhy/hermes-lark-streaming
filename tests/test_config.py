@@ -249,3 +249,51 @@ class TestPlatformCfg:
         cfg = _make_config({})
         with patch.dict(os.environ, {}, clear=True):
             assert cfg._platform_cfg() == {}
+
+
+def test_bound_profile_homes_resolve_distinct_gateway_platform_credentials(tmp_path) -> None:
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    home_a.mkdir()
+    home_b.mkdir()
+    (home_a / "config.yaml").write_text(
+        (
+            "streaming:\n  enabled: true\ngateway:\n  platforms:\n    feishu:\n"
+            "      extra:\n        app_id: app-a\n        app_secret: secret-a\n"
+        ),
+        encoding="utf-8",
+    )
+    (home_b / "config.yaml").write_text(
+        (
+            "streaming:\n  enabled: true\ngateway:\n  platforms:\n    feishu:\n"
+            "      extra:\n        app_id: app-b\n        app_secret: secret-b\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with patch.dict(os.environ, {}, clear=True):
+        cfg_a = Config(home_a)
+        cfg_b = Config(home_b)
+        assert (cfg_a.enabled, cfg_a.feishu_app_id, cfg_a.feishu_app_secret) == (True, "app-a", "secret-a")
+        assert (cfg_b.enabled, cfg_b.feishu_app_id, cfg_b.feishu_app_secret) == (True, "app-b", "secret-b")
+
+
+def test_nested_lark_domain_uses_larksuite_url() -> None:
+    cfg = _make_config(
+        {
+            "gateway": {
+                "platforms": {
+                    "lark": {
+                        "extra": {
+                            "app_id": "lark-id",
+                            "app_secret": "lark-secret",
+                            "domain": "lark",
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+    with patch.dict(os.environ, {}, clear=True):
+        assert cfg.feishu_base_url == "https://open.larksuite.com"
