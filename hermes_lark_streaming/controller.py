@@ -31,6 +31,7 @@ class StreamCardController(StreamingController):
         self._cfg = Config()
         self._client: FeishuClient | None = None
         self._sessions: dict[str, CardSession] = {}
+        self._session_keys: dict[str, CardSession] = {}
         self._interrupt_map: dict[str, str] = {}
         self._initialized = False
         self._init_lock = asyncio.Lock()
@@ -105,6 +106,7 @@ class StreamCardController(StreamingController):
         message_id: str | None,
         chat_id: str,
         anchor_id: str | None = None,
+        session_key: str | None = None,
     ) -> None:
         """消息处理开始 — 创建会话 + 发占位卡片."""
         if not self.enabled:
@@ -122,7 +124,10 @@ class StreamCardController(StreamingController):
             _logger.warning("no event loop available, skipping: msg=%s", message_id[:12])
             return
         session = CardSession(message_id, chat_id, loop)
+        session.session_key = session_key
         self._sessions[message_id] = session
+        if session_key:
+            self._session_keys[session_key] = session
         if anchor_id and anchor_id != message_id:
             session.anchor_id = anchor_id
             self._sessions[anchor_id] = session
@@ -240,6 +245,20 @@ class StreamCardController(StreamingController):
 
         self._complete_session(session)
 
+    async def on_session_aborted(self, *, session_key: str) -> bool:
+        """Terminate the active card bound to a Hermes session key."""
+        if not self.enabled or not session_key:
+            return False
+        session = self._session_keys.pop(session_key, None)
+        if session is None or session.state.is_terminal:
+            return False
+
+        session.state = SessionState.ABORTED
+        session.flush.mark_completed()
+        _logger.info("on_session_aborted: msg=%s state=ABORTED", session.message_id[:12])
+
+        return await self._complete_session_after_creation(session)
+
     def on_interrupted(
         self,
         *,
@@ -247,12 +266,14 @@ class StreamCardController(StreamingController):
         new_message_id: str,
         chat_id: str,
         anchor_id: str | None = None,
+        session_key: str | None = None,
     ) -> None:
         """用户发送新消息导致前一条消息被中断 — abort A + create B."""
         if not self.enabled:
             return
 
         old_session = self._get_active_session(old_message_id)
+        session_key = session_key or (old_session.session_key if old_session is not None else None)
         if old_session is not None:
             old_session.state = SessionState.ABORTED
             old_session.flush.mark_completed()
@@ -268,7 +289,10 @@ class StreamCardController(StreamingController):
                 reply_anchor_id = anchor_id if anchor_id and anchor_id != new_message_id else None
                 session = CardSession(new_message_id, chat_id, loop)
                 session.anchor_id = reply_anchor_id
+                session.session_key = session_key
                 self._sessions[new_message_id] = session
+                if session_key:
+                    self._session_keys[session_key] = session
                 if reply_anchor_id:
                     self._sessions[reply_anchor_id] = session
                 _logger.info(
@@ -289,6 +313,7 @@ class StreamCardController(StreamingController):
         *,
         message_id: str,
         answer: str = "",
+        is_error: bool = False,
         duration: float = 0.0,
         model: str = "",
         tokens: dict | None = None,
@@ -335,6 +360,8 @@ class StreamCardController(StreamingController):
             tokens=tokens,
             context=context,
         )
+        if is_error:
+            session.mark_failed()
 
         return await self._complete_session_wait(session)
 
@@ -426,6 +453,9 @@ class StreamCardController(StreamingController):
         anchor = getattr(session, "anchor_id", None)
         if anchor and self._sessions.get(anchor) is session:
             del self._sessions[anchor]
+        session_key = getattr(session, "session_key", None)
+        if session_key and self._session_keys.get(session_key) is session:
+            del self._session_keys[session_key]
         stale_keys = [k for k, v in self._interrupt_map.items() if v == message_id]
         for k in stale_keys:
             del self._interrupt_map[k]
@@ -505,7 +535,13 @@ class StreamCardController(StreamingController):
     def _complete_session(self, session: CardSession) -> None:
         """异步完成当前流式卡片."""
         session.flush.mark_completed()
-        self._fire_and_forget(self._do_complete_card(session), session._loop)
+        self._fire_and_forget(self._complete_session_after_creation(session), session._loop)
+
+    async def _complete_session_after_creation(self, session: CardSession) -> bool:
+        if not await self._wait_for_card_creation(session):
+            self._cleanup(session.message_id)
+            return False
+        return await self._complete_session_wait(session)
 
     async def _complete_session_wait(self, session: CardSession) -> bool:
         """完成当前流式卡片，并等待最终 API 结果."""

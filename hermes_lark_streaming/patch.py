@@ -113,9 +113,21 @@ def on_feishu_normalize(
 
 
 @_safe_hook()
-def on_message_started(*, ctrl: Any, message_id: str, chat_id: str, anchor_id: str | None = None) -> None:
+def on_message_started(
+    *,
+    ctrl: Any,
+    message_id: str,
+    chat_id: str,
+    anchor_id: str | None = None,
+    session_key: str | None = None,
+) -> None:
     """[注入点 1] 函数开头 — message.started."""
-    ctrl.on_message_started(message_id=message_id, chat_id=chat_id, anchor_id=anchor_id)
+    ctrl.on_message_started(
+        message_id=message_id,
+        chat_id=chat_id,
+        anchor_id=anchor_id,
+        session_key=session_key,
+    )
 
 
 @_safe_hook(default_return=False)
@@ -124,6 +136,7 @@ async def on_message_completed_wait(
     ctrl: Any,
     message_id: str,
     answer: str = "",
+    is_error: bool = False,
     duration: float = 0.0,
     model: str = "",
     tokens: dict[str, Any] | None = None,
@@ -134,6 +147,7 @@ async def on_message_completed_wait(
         await ctrl.on_completed_wait(
             message_id=message_id,
             answer=answer,
+            is_error=is_error,
             duration=duration,
             model=model,
             tokens=tokens,
@@ -158,6 +172,7 @@ async def on_queued_followup_boundary(*, ctrl: Any, message_id: str, result: dic
         await ctrl.on_completed_wait(
             message_id=message_id,
             answer=result.get("final_response") or "",
+            is_error=bool(result.get("failed")),
             duration=0.0,
             model=result.get("model", ""),
             tokens={
@@ -173,6 +188,7 @@ async def on_queued_followup_boundary(*, ctrl: Any, message_id: str, result: dic
     if sent:
         result["response_previewed"] = True
         result["already_sent"] = True
+        result["final_response"] = ""
     else:
         ctrl.consume_text_fallback(message_id)
     return sent
@@ -242,6 +258,18 @@ def on_message_aborted(*, ctrl: Any, message_id: str) -> None:
     ctrl.on_aborted(message_id=message_id)
 
 
+async def on_session_aborted(*, session_key: str) -> bool:
+    """Terminate the active card after Hermes handles a busy-session /stop."""
+    try:
+        ctrl = get_controller()
+        if not ctrl.enabled:
+            return False
+        return bool(await ctrl.on_session_aborted(session_key=session_key))
+    except Exception as exc:
+        _logger.warning("on_session_aborted error: %s", exc, exc_info=True)
+        return False
+
+
 @_safe_hook()
 def on_message_interrupted(
     *,
@@ -250,6 +278,7 @@ def on_message_interrupted(
     new_message_id: str,
     chat_id: str,
     anchor_id: str | None = None,
+    session_key: str | None = None,
 ) -> None:
     """[注入点 9] interrupt 发生 — message.interrupted."""
     ctrl.on_interrupted(
@@ -257,6 +286,7 @@ def on_message_interrupted(
         new_message_id=new_message_id,
         chat_id=chat_id,
         anchor_id=anchor_id,
+        session_key=session_key,
     )
 
 
