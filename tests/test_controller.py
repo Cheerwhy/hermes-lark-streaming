@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1419,6 +1420,93 @@ class TestCronDeliver:
             assert "hello" in card["body"]["elements"][0]["content"]
         finally:
             loop.call_soon_threadsafe(loop.stop)
+
+    def test_sends_card_without_gateway_loop(self) -> None:
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        ctrl._cfg.feishu_app_id = "app_id"
+        ctrl._cfg.feishu_app_secret = "app_secret"
+        ctrl._cfg.env_app_id = ""
+        ctrl._cfg.env_app_secret = ""
+
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_123"
+        with patch("hermes_lark_streaming.controller.FeishuClient", return_value=mock_client):
+            result = ctrl.on_cron_deliver(chat_id="c1", content="hello", loop=None)
+
+        assert result is True
+        assert ctrl._initialized is True
+        mock_client.send_card_to_chat.assert_called_once()
+
+    def test_initializes_once_across_standalone_workers(self) -> None:
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.feishu_app_id = "app_id"
+        ctrl._cfg.feishu_app_secret = "app_secret"
+        ctrl._cfg.env_app_id = ""
+        ctrl._cfg.env_app_secret = ""
+        constructor_entered = threading.Event()
+        release_constructor = threading.Event()
+        errors: list[BaseException] = []
+        mock_client = AsyncMock()
+
+        def slow_client(*args: object, **kwargs: object) -> AsyncMock:
+            constructor_entered.set()
+            assert release_constructor.wait(timeout=1)
+            return mock_client
+
+        def initialize() -> None:
+            try:
+                asyncio.run(ctrl._ensure_init())
+            except BaseException as exc:
+                errors.append(exc)
+
+        with patch("hermes_lark_streaming.controller.FeishuClient", side_effect=slow_client) as cls:
+            first = threading.Thread(target=initialize)
+            second = threading.Thread(target=initialize)
+            first.start()
+            assert constructor_entered.wait(timeout=1)
+            second.start()
+            release_constructor.set()
+            first.join(timeout=1)
+            second.join(timeout=1)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert errors == []
+        cls.assert_called_once()
+
+    def test_returns_false_on_standalone_send_failure(self) -> None:
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.side_effect = RuntimeError("API error")
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        assert ctrl.on_cron_deliver(chat_id="c1", content="hello", loop=None) is False
+
+    @pytest.mark.parametrize("closed", [False, True])
+    def test_falls_back_when_gateway_loop_is_unusable(self, closed: bool) -> None:
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_123"
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        loop = asyncio.new_event_loop()
+        if closed:
+            loop.close()
+        try:
+            assert ctrl.on_cron_deliver(chat_id="c1", content="hello", loop=loop) is True
+            mock_client.send_card_to_chat.assert_called_once()
+        finally:
+            if not loop.is_closed():
+                loop.close()
 
     def test_returns_false_on_send_failure(self) -> None:
         import threading
