@@ -32,6 +32,7 @@ _HOOK_NAMES = [
     "REASONING",
     "BACKGROUND_REVIEW",
     "ABORT",
+    "STOP",
     "INTERRUPT",
     "BG_DELIVER",
 ]
@@ -48,8 +49,9 @@ MK_THINKING, MK_THINKING_END = MARKERS[7]
 MK_REASONING, MK_REASONING_END = MARKERS[8]
 MK_BACKGROUND_REVIEW, MK_BACKGROUND_REVIEW_END = MARKERS[9]
 MK_ABORT, MK_ABORT_END = MARKERS[10]
-MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[11]
-MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[12]
+MK_STOP, MK_STOP_END = MARKERS[11]
+MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[12]
+MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[13]
 
 _BACKUP_SUFFIX = ".hermes_lark.bak"
 
@@ -60,7 +62,7 @@ def _valid_source(path: Path) -> Path | None:
         if candidate.is_file() and candidate.suffix == ".py":
             return candidate
     except (OSError, RuntimeError):
-        pass
+        _logger.debug("Invalid Hermes source candidate: %s", path, exc_info=True)
     return None
 
 
@@ -204,6 +206,15 @@ def _make_hook(indent: str, begin: str, end: str, body_lines: list[str]) -> str:
     return f"{indent}{begin}\n" + "".join(f"{indent}{line}\n" for line in body_lines) + f"{indent}{end}\n"
 
 
+def _hook_exception_lines(hook_name: str, indent: str = "") -> list[str]:
+    return [
+        f"{indent}except Exception:",
+        f"{indent}    import logging as _lark_logging",
+        f'{indent}    _lark_logging.getLogger("hermes_lark_streaming").exception('
+        f'"injected hook failed: {hook_name}")',
+    ]
+
+
 def _feishu_normalize_hook(indent: str) -> str:
     return _make_hook(
         indent,
@@ -218,8 +229,7 @@ def _feishu_normalize_hook(indent: str) -> str:
             "        event=event,",
             "        reply_anchor_id=self._reply_anchor_for_event(event),",
             "    )",
-            "except Exception:",
-            "    pass",
+            *_hook_exception_lines("normalize"),
         ],
     )
 
@@ -238,9 +248,9 @@ def _start_hook(indent: str) -> str:
             "            message_id=event.message_id,",
             "            chat_id=source.chat_id,",
             "            anchor_id=_lark_anchor_id,",
+            "            session_key=locals().get('session_key') or locals().get('_quick_key'),",
             "        )",
-            "except Exception:",
-            "    pass",
+            *_hook_exception_lines("start"),
         ],
     )
 
@@ -257,6 +267,7 @@ def _complete_hook(indent: str) -> str:
             "    _lark_card_sent = await on_message_completed_wait(",
             "        message_id=_lark_completion_id,",
             "        answer=response,",
+            "        is_error=bool(agent_result.get('failed')),",
             "        duration=_response_time,",
             "        model=agent_result.get('model', ''),",
             "        tokens={",
@@ -270,10 +281,12 @@ def _complete_hook(indent: str) -> str:
             "    )",
             "    if _lark_card_sent:",
             "        agent_result['already_sent'] = True",
+            "        _footer_line = ''",
+            "        if agent_result.get('failed'):",
+            "            response = ''",
             "    elif on_message_needs_text_fallback(message_id=_lark_completion_id):",
             "        agent_result.pop('already_sent', None)",
-            "except Exception:",
-            "    pass",
+            *_hook_exception_lines("complete"),
         ],
     )
 
@@ -286,9 +299,15 @@ def _followup_complete_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_lark_streaming.patch import on_queued_followup_boundary",
-            "    await on_queued_followup_boundary(message_id=event_message_id, result=result)",
-            "except Exception:",
-            "    pass",
+            "    _lark_delivery_result = response if isinstance(response, dict) else result",
+            "    _lark_followup_sent = await on_queued_followup_boundary(",
+            "        message_id=event_message_id, result=_lark_delivery_result",
+            "    )",
+            "    if _lark_followup_sent and _lark_delivery_result is not result:",
+            "        result['response_previewed'] = True",
+            "        result['already_sent'] = True",
+            "        result['final_response'] = ''",
+            *_hook_exception_lines("followup_complete"),
         ],
     )
 
@@ -307,8 +326,7 @@ def _followup_result_hook(indent: str) -> str:
             "            message_id=_lark_followup_completion_id,",
             "            followup_result=followup_result,",
             "        )",
-            "except Exception:",
-            "    pass",
+            *_hook_exception_lines("followup_result"),
         ],
     )
 
@@ -321,16 +339,39 @@ def _tool_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_lark_streaming.patch import on_tool_updated",
-            "    if _run_still_current() and event_type in ('tool.started', 'tool.completed'):",
+            "    try:",
+            "        _lark_ctx = ctx",
+            "    except NameError:",
+            "        try:",
+            "            _lark_ctx = self._ctx",
+            "        except (NameError, AttributeError):",
+            "            _lark_ctx = None",
+            "    if _lark_ctx is not None:",
+            "        _lark_message_id = _lark_ctx.event_message_id",
+            "        _lark_run_current = _lark_ctx._run_still_current",
+            "    else:",
+            "        _lark_message_id = event_message_id",
+            "        _lark_run_current = _run_still_current",
+            "    if _lark_run_current() and event_type in ('tool.started', 'tool.completed'):",
             "        if on_tool_updated(",
-            "            message_id=event_message_id,",
+            "            message_id=_lark_message_id,",
             "            tool_name=tool_name or '',",
             "            status='started' if event_type == 'tool.started' else 'completed',",
             "            detail=preview or '',",
             "        ):",
+            "            _lark_log_queue = getattr(_lark_ctx, 'log_queue', None) if _lark_ctx is not None else None",
+            "            if _lark_ctx is None:",
+            "                try:",
+            "                    _lark_log_queue = log_queue",
+            "                except NameError:",
+            "                    pass",
+            "            if _lark_log_queue is not None and event_type == 'tool.started' and tool_name != '_thinking':",
+            "                from datetime import datetime as _lark_datetime",
+            "                _lark_timestamp = _lark_datetime.now().strftime('%Y-%m-%d %H:%M:%S')",
+            "                _lark_preview = f' \"{preview}\"' if preview else ''",
+            "                _lark_log_queue.put(f'{_lark_timestamp}  {tool_name}:{_lark_preview}'.rstrip())",
             "            return",
-            "except Exception:",
-            "    pass",
+            *_hook_exception_lines("tool"),
         ],
     )
 
@@ -343,10 +384,27 @@ def _answer_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_lark_streaming.patch import on_answer_delta",
-            "    if text and _run_still_current() and on_answer_delta(message_id=event_message_id, text=text):",
+            "    try:",
+            "        _lark_message_id = ctx.event_message_id",
+            "        _lark_run_current = ctx._run_still_current",
+            "    except NameError:",
+            "        _lark_message_id = event_message_id",
+            "        _lark_run_current = _run_still_current",
+            "    if text and _lark_run_current() and on_answer_delta(message_id=_lark_message_id, text=text):",
+            "        try:",
+            "            _lark_stts_consumer = _stts_consumer_ref",
+            "        except NameError:",
+            "            _lark_stts_consumer = None",
+            "        if _lark_stts_consumer is not None:",
+            "            try:",
+            "                _lark_stts_consumer.on_delta(text)",
+            "            except Exception:",
+            "                import logging as _lark_logging",
+            "                _lark_logging.getLogger(\"hermes_lark_streaming\").exception(",
+            "                    \"injected hook failed: streaming_tts\"",
+            "                )",
             "        return",
-            "except Exception:",
-            "    pass",
+            *_hook_exception_lines("answer"),
         ],
     )
 
@@ -359,11 +417,16 @@ def _thinking_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_lark_streaming.patch import on_thinking_delta",
-            "    if (text and not already_streamed and _run_still_current()",
-            "            and on_thinking_delta(message_id=event_message_id, text=text)):",
+            "    try:",
+            "        _lark_message_id = ctx.event_message_id",
+            "        _lark_run_current = ctx._run_still_current",
+            "    except NameError:",
+            "        _lark_message_id = event_message_id",
+            "        _lark_run_current = _run_still_current",
+            "    if (text and not already_streamed and _lark_run_current()",
+            "            and on_thinking_delta(message_id=_lark_message_id, text=text)):",
             "        return",
-            "except Exception:",
-            "    pass",
+            *_hook_exception_lines("thinking"),
         ],
     )
 
@@ -375,12 +438,17 @@ def _reasoning_hook(indent: str) -> str:
         MK_REASONING_END,
         [
             "def _reasoning_cb(text):",
-            "    if text and _run_still_current():",
+            "    try:",
             "        try:",
+            "            _lark_message_id = ctx.event_message_id",
+            "            _lark_run_current = ctx._run_still_current",
+            "        except NameError:",
+            "            _lark_message_id = event_message_id",
+            "            _lark_run_current = _run_still_current",
+            "        if text and _lark_run_current():",
             "            from hermes_lark_streaming.patch import on_reasoning_delta",
-            "            on_reasoning_delta(message_id=event_message_id, text=text)",
-            "        except Exception:",
-            "            pass",
+            "            on_reasoning_delta(message_id=_lark_message_id, text=text)",
+            *_hook_exception_lines("reasoning", indent="    "),
             "agent.reasoning_callback = _reasoning_cb",
         ],
     )
@@ -396,16 +464,19 @@ def _background_review_hook(indent: str) -> str:
             "    from hermes_lark_streaming.patch import on_background_review_message",
             "    _lark_bg_review_sender = agent.background_review_callback",
             "    def _lark_bg_review_callback(message):",
+            "        try:",
+            "            _lark_message_id = ctx.event_message_id",
+            "        except NameError:",
+            "            _lark_message_id = event_message_id",
             "        _lark_bg_review_deferred = on_background_review_message(",
-            "            message_id=event_message_id,",
+            "            message_id=_lark_message_id,",
             "            text=message,",
             "            sender=_lark_bg_review_sender,",
             "        )",
             "        if not _lark_bg_review_deferred:",
             "            _lark_bg_review_sender(message)",
             "    agent.background_review_callback = _lark_bg_review_callback",
-            "except Exception:",
-            "    pass",
+            *_hook_exception_lines("background_review"),
         ],
     )
 
@@ -419,8 +490,24 @@ def _abort_hook(indent: str) -> str:
             "try:",
             "    from hermes_lark_streaming.patch import on_message_aborted",
             "    on_message_aborted(message_id=event.message_id)",
-            "except Exception:",
-            "    pass",
+            *_hook_exception_lines("abort"),
+        ],
+    )
+
+
+def _stop_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_STOP,
+        MK_STOP_END,
+        [
+            "try:",
+            "    if source.platform.value.lower() in ('feishu', 'lark'):",
+            "        from hermes_lark_streaming.patch import on_session_aborted",
+            "        await on_session_aborted(",
+            "            session_key=locals().get('quick_key') or locals().get('_quick_key') or '',",
+            "        )",
+            *_hook_exception_lines("stop"),
         ],
     )
 
@@ -444,6 +531,7 @@ def _interrupt_hook(indent: str) -> str:
             "                new_message_id=_lark_next_message_id,",
             "                chat_id=source.chat_id,",
             "                anchor_id=_lark_next_anchor_id,",
+            "                session_key=locals().get('next_session_key') or locals().get('session_key'),",
             "            )",
             "        elif was_interrupted:",
             "            on_message_aborted(message_id=event_message_id)",
@@ -452,9 +540,9 @@ def _interrupt_hook(indent: str) -> str:
             "                message_id=_lark_next_message_id,",
             "                chat_id=getattr(next_source, 'chat_id', source.chat_id),",
             "                anchor_id=_lark_next_anchor_id,",
+            "                session_key=locals().get('next_session_key') or locals().get('session_key'),",
             "            )",
-            "except Exception:",
-            "    pass",
+            *_hook_exception_lines("interrupt"),
         ],
     )
 
@@ -466,7 +554,10 @@ def _cron_deliver_hook(indent: str) -> str:
         MK_CRON_DELIVER_END,
         [
             "try:",
-            "    if platform_name.lower() in ('feishu', 'lark'):",
+            "    if (",
+            "        platform_name.lower() in ('feishu', 'lark')",
+            "        and not getattr(locals().get('transport'), 'is_relay', False)",
+            "    ):",
             "        if '_hermes_lark_cron_seen' not in locals():",
             "            _hermes_lark_cron_seen = set()",
             "        _hermes_lark_cron_key = (str(chat_id), cleaned_delivery_content.strip())",
@@ -484,8 +575,7 @@ def _cron_deliver_hook(indent: str) -> str:
             "            _hermes_lark_cron_seen.add(_hermes_lark_cron_key)",
             "            delivered = True",
             "            continue",
-            "except Exception:",
-            "    pass",
+            *_hook_exception_lines("cron_deliver"),
         ],
     )
 
@@ -509,25 +599,30 @@ def _bg_deliver_hook(indent: str) -> str:
             "            text_content = ''",
             "            if not images and not media_files:",
             "                return",
-            "except Exception:",
-            "    pass",
+            *_hook_exception_lines("background_deliver"),
         ],
     )
 
 
 def _remove_block(content: str, begin: str, end: str) -> str:
     lines = content.splitlines(keepends=True)
-    begin_idx = end_idx = None
-    for i, line in enumerate(lines):
+    result: list[str] = []
+    in_block = False
+    for line in lines:
         stripped = line.strip()
         if stripped == begin:
-            begin_idx = i
+            if in_block:
+                return content
+            in_block = True
+            continue
         if stripped == end:
-            end_idx = i
-            break
-    if begin_idx is not None and end_idx is not None:
-        return "".join(lines[:begin_idx] + lines[end_idx + 1 :])
-    return content
+            if not in_block:
+                return content
+            in_block = False
+            continue
+        if not in_block:
+            result.append(line)
+    return content if in_block else "".join(result)
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -552,6 +647,13 @@ class PatcherError(RuntimeError):
     pass
 
 
+def _remove_block_checked(content: str, begin: str, end: str) -> str:
+    updated = _remove_block(content, begin, end)
+    if any(line.strip() in (begin, end) for line in updated.splitlines()):
+        raise PatcherError(f"Malformed injected marker block: {begin}")
+    return updated
+
+
 class Patcher:
     """管理 AST 注入的安装和移除."""
 
@@ -572,7 +674,14 @@ class Patcher:
 
     def is_fully_patched(self) -> bool:
         content = self.run_path.read_text(encoding="utf-8")
-        return all(begin in content and end in content for begin, end in self.MARKERS)
+        tree = ast.parse(content)
+        lines = content.splitlines(keepends=True)
+        answer_sites = _find_func_bodies(tree, lines, "_stream_delta_cb")
+        for begin, end in self.MARKERS:
+            expected = len(answer_sites) if begin == MK_ANSWER else 1
+            if content.count(begin) != expected or content.count(end) != expected:
+                return False
+        return True
 
     def verify_target(self) -> None:
         content = self.run_path.read_text(encoding="utf-8")
@@ -632,9 +741,9 @@ class Patcher:
 
         self.verify_target()
         content = self.run_path.read_text(encoding="utf-8")
-        if self.is_patched():
+        if any(marker in content for pair in self.MARKERS for marker in pair):
             for begin, end in self.MARKERS:
-                content = _remove_block(content, begin, end)
+                content = _remove_block_checked(content, begin, end)
         else:
             self._backup()
         content = self._inject_all(content)
@@ -642,10 +751,10 @@ class Patcher:
 
     def remove(self) -> None:
         content = self.run_path.read_text(encoding="utf-8")
-        if not any(begin in content for begin, _ in self.MARKERS):
+        if not any(marker in content for pair in self.MARKERS for marker in pair):
             return
         for begin, end in self.MARKERS:
-            content = _remove_block(content, begin, end)
+            content = _remove_block_checked(content, begin, end)
         _atomic_write(self.run_path, content)
 
     def restore(self) -> None:
@@ -670,14 +779,18 @@ class Patcher:
             ("followup_complete", "followup_complete", _find_followup_complete_site(tree, lines)),
             ("followup_result", "followup_result", _find_followup_result_site(tree, lines)),
             ("abort", "abort", _find_handler_abort(tree, lines)),
+            ("stop", "stop", _find_stop_site(tree, lines)),
             ("interrupt", "interrupt", _find_interrupt_site(tree, lines)),
             ("tool", "tool", _find_func_body(tree, lines, "progress_callback")),
-            ("answer", "answer", _find_func_body(tree, lines, "_stream_delta_cb")),
             ("thinking", "thinking", _find_func_body(tree, lines, "_interim_assistant_cb")),
             ("reasoning", "reasoning", _find_reasoning_site(tree, lines)),
             ("background_review", "background_review", _find_background_review_site(tree, lines)),
             ("bg_deliver", "bg_deliver", _find_bg_deliver_site(tree, lines)),
         ]
+        hook_defs.extend(
+            ("answer", f"answer callback {index}", loc)
+            for index, loc in enumerate(_find_func_bodies(tree, lines, "_stream_delta_cb"), start=1)
+        )
 
         sites: list[tuple[int, str, str]] = []
         for hook_fn_name, name, loc in hook_defs:
@@ -696,6 +809,7 @@ class Patcher:
             "followup_complete": _followup_complete_hook,
             "followup_result": _followup_result_hook,
             "abort": _abort_hook,
+            "stop": _stop_hook,
             "interrupt": _interrupt_hook,
             "tool": _tool_hook,
             "answer": _answer_hook,
@@ -712,6 +826,12 @@ class Patcher:
 
 
 def _find_func_body(tree: ast.Module, lines: list[str], name: str) -> tuple[int, str] | None:
+    sites = _find_func_bodies(tree, lines, name)
+    return sites[0] if sites else None
+
+
+def _find_func_bodies(tree: ast.Module, lines: list[str], name: str) -> list[tuple[int, str]]:
+    sites: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)) and node.name == name:
             body = node.body
@@ -726,8 +846,8 @@ def _find_func_body(tree: ast.Module, lines: list[str], name: str) -> tuple[int,
             if start < len(body):
                 lineno = body[start].lineno - 1
                 indent = _safe_indent(lines, lineno)
-                return lineno, indent
-    return None
+                sites.append((lineno, indent))
+    return sites
 
 
 def _find_handle_message_source_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
@@ -782,6 +902,27 @@ def _find_handler_abort(tree: ast.Module, lines: list[str]) -> tuple[int, str] |
                     indent = _safe_indent(lines, j)
                     return j, indent
             break
+    return None
+
+
+def _find_stop_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Await):
+            continue
+        call = node.value.value
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        if not isinstance(func, ast.Attribute) or func.attr != "_interrupt_and_clear_session":
+            continue
+        is_stop = any(
+            keyword.arg == "invalidation_reason"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "stop_command"
+            for keyword in call.keywords
+        )
+        if is_stop:
+            return node.end_lineno or node.lineno, _safe_indent(lines, node.lineno - 1)
     return None
 
 
@@ -863,11 +1004,17 @@ class CronPatcher:
             raise PatcherError("Cannot find 'cleaned_delivery_content' in scheduler.py")
 
     def apply(self) -> None:
-        if self.is_patched():
-            return
+        content = self.cron_path.read_text(encoding="utf-8")
+        has_markers = MK_CRON_DELIVER in content or MK_CRON_DELIVER_END in content
+        if has_markers:
+            cleaned = _remove_block_checked(content, MK_CRON_DELIVER, MK_CRON_DELIVER_END)
+            if content.count(MK_CRON_DELIVER) == 1 and content.count(MK_CRON_DELIVER_END) == 1:
+                return
+            content = cleaned
         self.verify_target()
-        self._backup()
-        lines = self.cron_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        if not has_markers:
+            self._backup()
+        lines = content.splitlines(keepends=True)
 
         inject_idx = None
         for i, line in enumerate(lines):
@@ -884,9 +1031,9 @@ class CronPatcher:
 
     def remove(self) -> None:
         content = self.cron_path.read_text(encoding="utf-8")
-        if MK_CRON_DELIVER not in content:
+        if MK_CRON_DELIVER not in content and MK_CRON_DELIVER_END not in content:
             return
-        content = _remove_block(content, MK_CRON_DELIVER, MK_CRON_DELIVER_END)
+        content = _remove_block_checked(content, MK_CRON_DELIVER, MK_CRON_DELIVER_END)
         _atomic_write(self.cron_path, content)
 
     def restore(self) -> None:

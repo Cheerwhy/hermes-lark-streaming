@@ -88,7 +88,7 @@ def test_on_interrupted_uses_new_message_id_and_anchor_alias() -> None:
     _enable(ctrl)
 
     with patch.object(ctrl, "_fire_and_forget", side_effect=lambda coro, loop: coro.close()):
-        ctrl.on_message_started(message_id="old", chat_id="chat")
+        ctrl.on_message_started(message_id="old", chat_id="chat", session_key="session:chat")
         ctrl.on_interrupted(
             old_message_id="old",
             new_message_id="new",
@@ -101,6 +101,110 @@ def test_on_interrupted_uses_new_message_id_and_anchor_alias() -> None:
     assert session.anchor_id == "quoted"
     assert ctrl._interrupt_map["old"] == "new"
     assert ctrl._sessions["old"].state == SessionState.ABORTED
+    assert session.session_key == "session:chat"
+    assert ctrl._session_keys["session:chat"] is session
+
+
+@pytest.mark.asyncio
+async def test_on_session_aborted_only_stops_matching_session_key() -> None:
+    ctrl = StreamCardController()
+    _enable(ctrl)
+
+    with patch.object(ctrl, "_fire_and_forget", side_effect=lambda coro, loop: coro.close()):
+        ctrl.on_message_started(
+            message_id="first",
+            chat_id="shared-chat",
+            session_key="session:first",
+        )
+        ctrl.on_message_started(
+            message_id="second",
+            chat_id="shared-chat",
+            session_key="session:second",
+        )
+        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True) as complete:
+            assert await ctrl.on_session_aborted(session_key="session:first") is True
+
+    assert ctrl._sessions["first"].state == SessionState.ABORTED
+    assert ctrl._sessions["second"].state == SessionState.IDLE
+    assert "session:first" not in ctrl._session_keys
+    assert ctrl._session_keys["session:second"] is ctrl._sessions["second"]
+    complete.assert_awaited_once_with(ctrl._sessions["first"])
+
+
+@pytest.mark.asyncio
+async def test_on_session_aborted_waits_for_card_creation() -> None:
+    ctrl = _setup_ctrl()
+    session = CardSession("creating", "chat", asyncio.get_running_loop())
+    session.session_key = "session:creating"
+    ctrl._sessions["creating"] = session
+    ctrl._session_keys["session:creating"] = session
+    ready = asyncio.Event()
+
+    async def finish_create() -> None:
+        session.state = SessionState.CREATING
+        await ready.wait()
+        session.card_id = "card"
+        session.card_msg_id = "card-message"
+
+    session.create_task = asyncio.create_task(finish_create())
+
+    with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True) as complete:
+        waiter = asyncio.create_task(ctrl.on_session_aborted(session_key="session:creating"))
+        await asyncio.sleep(0.01)
+        assert not waiter.done()
+        assert session.state == SessionState.ABORTED
+
+        ready.set()
+        assert await waiter is True
+
+    complete.assert_awaited_once_with(session)
+
+
+@pytest.mark.asyncio
+async def test_on_interrupted_waits_for_old_card_creation_before_cleanup() -> None:
+    ctrl = _setup_ctrl()
+    old_session = CardSession("old", "chat", asyncio.get_running_loop())
+    ctrl._sessions["old"] = old_session
+    ready = asyncio.Event()
+    completed: list[str] = []
+    tasks: list[asyncio.Task[object]] = []
+
+    async def finish_create() -> None:
+        old_session.state = SessionState.CREATING
+        await ready.wait()
+        old_session.card_id = "old-card"
+        old_session.card_msg_id = "old-card-message"
+
+    async def complete_card(_session: CardSession) -> bool:
+        completed.append("old")
+        return True
+
+    def schedule(coro: object, _loop: asyncio.AbstractEventLoop) -> asyncio.Task[object]:
+        task = asyncio.create_task(coro)  # type: ignore[arg-type]
+        tasks.append(task)
+        return task
+
+    old_session.create_task = asyncio.create_task(finish_create())
+    with (
+        patch.object(ctrl, "_do_complete_card_inner", side_effect=complete_card),
+        patch.object(ctrl, "_do_create_card", new_callable=AsyncMock),
+        patch.object(ctrl, "_fire_and_forget", side_effect=schedule),
+    ):
+        ctrl.on_interrupted(
+            old_message_id="old",
+            new_message_id="new",
+            chat_id="chat",
+        )
+        await asyncio.sleep(0)
+
+        assert "old" in ctrl._sessions
+        assert completed == []
+
+        ready.set()
+        await asyncio.gather(old_session.create_task, *tasks)
+
+    assert completed == ["old"]
+    assert "old" not in ctrl._sessions
 
 
 def test_prune_stale_sessions_ignores_none_key_and_prunes_valid_key() -> None:
@@ -142,6 +246,49 @@ async def test_background_review_deferred_until_complete() -> None:
 
     assert sent == ["review"]
     assert "msg_bg" not in ctrl._sessions
+
+
+@pytest.mark.asyncio
+async def test_background_review_does_not_interrupt_replacement_card() -> None:
+    ctrl = _setup_ctrl()
+    old_session = CardSession("old", "chat", asyncio.get_running_loop())
+    old_session.state = SessionState.STREAMING
+    old_session.card_id = "old-card"
+    old_session.card_msg_id = "old-card-message"
+    ctrl._sessions["old"] = old_session
+    events: list[str] = []
+    tasks: list[asyncio.Task[object]] = []
+
+    assert ctrl.defer_background_review(
+        message_id="old",
+        text="review",
+        sender=lambda _text: events.append("review_sent"),
+    )
+
+    async def complete_card(_session: CardSession) -> bool:
+        events.append("old_card_completed")
+        return True
+
+    def schedule(coro: object, _loop: asyncio.AbstractEventLoop) -> asyncio.Task[object]:
+        task = asyncio.create_task(coro)  # type: ignore[arg-type]
+        tasks.append(task)
+        return task
+
+    with (
+        patch.object(ctrl, "_do_complete_card_inner", side_effect=complete_card),
+        patch.object(ctrl, "_do_create_card", new_callable=AsyncMock),
+        patch.object(ctrl, "_fire_and_forget", side_effect=schedule),
+    ):
+        ctrl.on_interrupted(
+            old_message_id="old",
+            new_message_id="new",
+            chat_id="chat",
+        )
+        await asyncio.gather(*tasks)
+
+    assert events == ["old_card_completed", "review_sent"]
+    assert "old" not in ctrl._sessions
+    assert ctrl._sessions["new"].deferred_background_reviews == []
 
 
 def test_background_review_without_active_session_not_deferred() -> None:
@@ -259,6 +406,22 @@ class TestAwaitedCompletion:
         assert len(session.segment_state.segments) == 1
         assert session.segment_state.segments[0].type == "answer"
         assert session.segment_state.segments[0].text == "short"
+
+    @pytest.mark.asyncio
+    async def test_agent_failure_finalizes_card_as_error(self) -> None:
+        ctrl = _setup_ctrl()
+        session = CardSession("msg_error", "chat", asyncio.get_running_loop())
+        session.state = SessionState.STREAMING
+        session.card_id = "card_error"
+        session.card_msg_id = "card_msg_error"
+        ctrl._sessions["msg_error"] = session
+
+        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
+            assert await ctrl.on_completed_wait(
+                message_id="msg_error", answer="request failed", is_error=True,
+            ) is True
+
+        assert session.state == SessionState.FAILED
 
 
 @pytest.mark.asyncio

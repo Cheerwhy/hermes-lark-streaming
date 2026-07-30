@@ -58,6 +58,7 @@ class CardSession:
         "message_id",
         "segment_state",
         "sequence",
+        "session_key",
         "split_disabled",
         "split_index",
         "state",
@@ -73,6 +74,7 @@ class CardSession:
         self.message_id = message_id
         self.anchor_id: str | None = None
         self.chat_id = chat_id
+        self.session_key: str | None = None
         self.create_task: asyncio.Future[Any] | ConcurrentFuture | None = None
         self.state = SessionState.IDLE
         self.card_msg_id: str | None = None
