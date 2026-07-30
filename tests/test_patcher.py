@@ -850,14 +850,19 @@ class TestOnCronDeliverHook:
             mock_get.return_value = ctrl
             assert on_cron_deliver(chat_id="c1", content="text", loop=MagicMock()) is False
 
-    def test_returns_false_when_no_loop(self) -> None:
+    def test_delegates_to_controller_when_no_loop(self) -> None:
         from hermes_lark_streaming.patch import on_cron_deliver
 
         with patch("hermes_lark_streaming.patch.get_controller") as mock_get:
             ctrl = MagicMock()
             ctrl.enabled = True
+            ctrl.on_cron_deliver.return_value = True
             mock_get.return_value = ctrl
-            assert on_cron_deliver(chat_id="c1", content="text", loop=None) is False
+            assert on_cron_deliver(chat_id="c1", content="text", loop=None) is True
+            ctrl.on_cron_deliver.assert_called_once_with(
+                chat_id="c1", content="text", loop=None,
+                task_name="", run_time="",
+            )
 
     def test_delegates_to_controller(self) -> None:
         from hermes_lark_streaming.patch import on_cron_deliver

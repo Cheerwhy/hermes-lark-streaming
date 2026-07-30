@@ -299,8 +299,6 @@ def on_cron_deliver(
     run_time: str = "",
 ) -> bool:
     """[注入点 10] cron 推送 — 包装为飞书卡片发送."""
-    if loop is None:
-        return False
     try:
         ctrl = get_controller()
         if not ctrl.enabled:

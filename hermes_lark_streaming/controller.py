@@ -34,7 +34,7 @@ class StreamCardController(StreamingController):
         self._session_keys: dict[str, CardSession] = {}
         self._interrupt_map: dict[str, str] = {}
         self._initialized = False
-        self._init_lock = asyncio.Lock()
+        self._init_lock = threading.Lock()
         self._session_ttl = self._cfg.card_duration_sec
         self._loop: asyncio.AbstractEventLoop | None = None
         self._text_fallback_needed: set[str] = set()
@@ -47,7 +47,7 @@ class StreamCardController(StreamingController):
     async def _ensure_init(self) -> None:
         if self._initialized:
             return
-        async with self._init_lock:
+        with self._init_lock:
             if self._initialized:
                 return
             app_id = self._cfg.feishu_app_id or self._cfg.env_app_id
@@ -370,18 +370,26 @@ class StreamCardController(StreamingController):
         *,
         chat_id: str,
         content: str,
-        loop: asyncio.AbstractEventLoop,
+        loop: asyncio.AbstractEventLoop | None,
         task_name: str = "",
         run_time: str = "",
     ) -> bool:
         """Cron 推送 — 包装为静态卡片发送，成功返回 True."""
         if not self.enabled or not content or not chat_id:
             return False
-        future = asyncio.run_coroutine_threadsafe(
-            self._do_cron_deliver(chat_id, content, task_name=task_name, run_time=run_time), loop
+        coroutine = self._do_cron_deliver(
+            chat_id, content, task_name=task_name, run_time=run_time
         )
         try:
-            future.result(timeout=30)
+            if loop is not None and loop.is_running() and not loop.is_closed():
+                try:
+                    future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+                except Exception:
+                    coroutine.close()
+                    raise
+                future.result(timeout=30)
+            else:
+                asyncio.run(coroutine)
             _logger.info("cron card delivered: chat=%s len=%d", chat_id[:12], len(content))
             return True
         except Exception:
