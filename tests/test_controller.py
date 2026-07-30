@@ -84,14 +84,11 @@ def test_enabled_retries_unsuccessful_unscoped_fallback() -> None:
 def test_enabled_uses_and_restores_profile_secret_scope(tmp_path, monkeypatch) -> None:
     secret_scope = ModuleType("agent.secret_scope")
     active_scope: ContextVar[dict[str, str] | None] = ContextVar("active_scope", default=None)
-    multiplex_active = True
+    scoped_homes = []
 
     def build_profile_secret_scope(home) -> dict[str, str]:
-        return dict(
-            line.split("=", 1)
-            for line in (home / ".env").read_text(encoding="utf-8").splitlines()
-            if "=" in line
-        )
+        scoped_homes.append(home)
+        return {"FEISHU_APP_ID": "profile-app", "FEISHU_APP_SECRET": "profile-secret"}
 
     def get_secret(name: str, default: str = "") -> str:
         return (active_scope.get() or {}).get(name, default)
@@ -99,7 +96,7 @@ def test_enabled_uses_and_restores_profile_secret_scope(tmp_path, monkeypatch) -
     secret_scope.build_profile_secret_scope = build_profile_secret_scope
     secret_scope.current_secret_scope = active_scope.get
     secret_scope.get_secret = get_secret
-    secret_scope.is_multiplex_active = lambda: multiplex_active
+    secret_scope.is_multiplex_active = lambda: True
     secret_scope.reset_secret_scope = active_scope.reset
     secret_scope.set_secret_scope = active_scope.set
     agent = ModuleType("agent")
@@ -110,14 +107,11 @@ def test_enabled_uses_and_restores_profile_secret_scope(tmp_path, monkeypatch) -
     profile_home = tmp_path / "profile"
     profile_home.mkdir()
     (profile_home / "config.yaml").write_text("streaming:\n  enabled: true\n", encoding="utf-8")
-    (profile_home / ".env").write_text(
-        "FEISHU_APP_ID=profile-app\nFEISHU_APP_SECRET=profile-secret\n",
-        encoding="utf-8",
-    )
     ctrl = StreamCardController(profile_home)
     assert active_scope.get() is None
     assert ctrl.enabled is True
     assert active_scope.get() is None
+    assert scoped_homes == [profile_home]
 
 
 def _set_cached_loop(ctrl: StreamCardController) -> asyncio.AbstractEventLoop:
