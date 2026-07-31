@@ -386,6 +386,14 @@ class TestBuildStreamingCardV2:
         tool_idx = ids.index(TOOL_PANEL_ELEMENT_ID)
         assert reasoning_idx < tool_idx
 
+    def test_width_mode_default(self) -> None:
+        card = build_streaming_card_v2()
+        assert card["config"]["width_mode"] == "default"
+
+    def test_width_mode_custom(self) -> None:
+        card = build_streaming_card_v2(width_mode="compact")
+        assert card["config"]["width_mode"] == "compact"
+
 
 # --- 分段完成态卡片 ---
 
@@ -470,6 +478,21 @@ class TestBuildSegmentCompleteCard:
         )
         inner = next(e for e in card["body"]["elements"] if e.get("tag") == "collapsible_panel")["elements"]
         assert len(inner) == 2
+
+    def test_complete_card_width_mode_default(self) -> None:
+        card = build_complete_card(
+            segments=[_seg("answer", "hi")],
+            all_tool_steps=[],
+        )
+        assert card["config"]["width_mode"] == "default"
+
+    def test_complete_card_width_mode_custom(self) -> None:
+        card = build_complete_card(
+            segments=[_seg("answer", "hi")],
+            all_tool_steps=[],
+            width_mode="fill",
+        )
+        assert card["config"]["width_mode"] == "fill"
 
     def test_tool_empty_steps_skipped(self) -> None:
         card = build_complete_card(

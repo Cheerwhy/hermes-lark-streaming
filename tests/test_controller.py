@@ -671,6 +671,17 @@ class TestDoCreateCard:
         assert session.state == SessionState.STREAMING
 
     @pytest.mark.asyncio
+    async def test_applies_width_mode_to_streaming_card(self) -> None:
+        ctrl = _setup_ctrl()
+        ctrl._cfg._raw["streaming"]["width_mode"] = "compact"
+        session = _make_session("msg_width_create")
+
+        await ctrl._do_create_card(session)
+
+        card = ctrl._client.cardkit_create.await_args.args[0]
+        assert card["config"]["width_mode"] == "compact"
+
+    @pytest.mark.asyncio
     async def test_content_failure_recreates_card_and_retries_reply(self) -> None:
         ctrl = _setup_ctrl()
         ctrl._client.cardkit_create = AsyncMock(side_effect=["card_first", "card_second"])
@@ -879,6 +890,7 @@ class TestDoFlush:
     async def test_second_split_seals_only_current_card_segments(self) -> None:
         """多次拆卡时，seal 不应重复包含更早卡片上的 segments."""
         ctrl = _setup_ctrl()
+        ctrl._cfg._raw["streaming"]["width_mode"] = "compact"
         sealed_cards: list[dict] = []
         ctrl._client.cardkit_create = AsyncMock(return_value="card_page_3")
         ctrl._client.reply_card_by_id = AsyncMock(return_value="msg_page_3")
@@ -902,6 +914,9 @@ class TestDoFlush:
 
         contents = [element["content"] for element in sealed_cards[0]["body"]["elements"]]
         assert contents == ["page content 2", "page content 3", "page content 4"]
+        assert sealed_cards[0]["config"]["width_mode"] == "compact"
+        next_card = ctrl._client.cardkit_create.await_args.args[0]
+        assert next_card["config"]["width_mode"] == "compact"
         assert session.split_index == 5
 
     @pytest.mark.asyncio
@@ -1381,6 +1396,7 @@ class TestDoCompleteCard:
     @pytest.mark.asyncio
     async def test_closes_streaming_then_updates(self) -> None:
         ctrl = _setup_ctrl()
+        ctrl._cfg._raw["streaming"]["width_mode"] = "compact"
         call_order: list[str] = []
         client = ctrl._client
         client.cardkit_close_streaming = AsyncMock(side_effect=lambda *a, **k: call_order.append("close"))
@@ -1395,6 +1411,8 @@ class TestDoCompleteCard:
         assert await ctrl._do_complete_card(session) is True
         assert session.state == SessionState.COMPLETED
         assert call_order == ["close", "update"]
+        card = client.cardkit_update.await_args.args[1]
+        assert card["config"]["width_mode"] == "compact"
 
     @pytest.mark.asyncio
     async def test_streaming_closed_flag_prevents_double_close(self) -> None:

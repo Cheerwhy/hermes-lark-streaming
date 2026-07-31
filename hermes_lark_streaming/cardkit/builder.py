@@ -411,6 +411,7 @@ def build_streaming_card_v2(
     show_streaming_element: bool = True,
     header_enabled: bool = False,
     text_size: str = "normal_v2",
+    width_mode: str = "default",
 ) -> dict[str, Any]:
     """CardKit 2.0 流式占位卡片 — 含工具面板 + streaming + loading 元素."""
     elements: list[dict] = []
@@ -433,6 +434,7 @@ def build_streaming_card_v2(
     card = {
         "schema": "2.0",
         "config": {
+            "width_mode": width_mode,
             "streaming_mode": True,
             "streaming_config": {
                 "print_frequency_ms": {"default": 15},
@@ -467,6 +469,7 @@ def build_complete_card(
     header_enabled: bool = False,
     body_text_size: str = "normal_v2",
     show_tool_use: bool = True,
+    width_mode: str = "default",
 ) -> dict[str, Any]:
     """完成态流式卡片 — 按 segments 顺序渲染."""
     elements: list[dict] = []
@@ -518,6 +521,7 @@ def build_complete_card(
     card: dict[str, Any] = {
         "schema": "2.0",
         "config": {
+            "width_mode": width_mode,
             "wide_screen_mode": True,
             "update_multi": True,
             "locales": _LOCALES,
