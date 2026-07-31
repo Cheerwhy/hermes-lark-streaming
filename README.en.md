@@ -107,6 +107,10 @@ streaming:
       - [status, elapsed, context, model]
     show_label: false
   panel_expanded: false   # Keep completion panels expanded, default false
+display:
+  platforms:
+    feishu:
+      show_tool_use: true   # Show tool-use panels in streaming and completion cards; default true
 ```
 
 **Header** (`streaming.header.enabled`): Controls whether the card displays a status header bar. When enabled, the header auto-themes by state — blue for streaming, green for completed, red for stopped/error. Default: disabled.
@@ -130,6 +134,8 @@ streaming:
 **Panel Expand** (`panel_expanded`): Reasoning and tool panels are collapsed by default in completion cards. Set to `true` to keep them expanded.
 
 **Card Width** (`streaming.width_mode`): Controls card width mode. Allowed values: `default`, `compact`, `fill`. Default: `default`.
+
+**Tool-Use Panel** (`display.platforms.feishu.show_tool_use`): Controls whether tool-use panels are displayed. The platform-specific setting takes precedence over global `display.show_tool_use`. Default: `true`. This setting is reloaded at runtime.
 
 ---
 

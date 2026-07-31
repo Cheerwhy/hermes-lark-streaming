@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.0] - 2026-07-31
+
+### 新增
+
+- 新增 `streaming.width_mode`，可选 `default`、`compact`、`fill`，控制流式卡片与完成态卡片的宽度模式。(#81) 感谢 @DarkMagicCK.
+- 新增 `display.platforms.feishu.show_tool_use`（可回退到 `display.show_tool_use`）开关，可在流式和完成态卡片中隐藏工具调用面板；默认开启以保持兼容。(#91) 感谢 @DongCarzy.
+
+### 修复
+
+- 适配 Hermes 0.19 运行时：支持 TurnRunner 上下文与多个流式回调，修复 `/stop`、中断、队列 follow-up 的卡片生命周期及原生重复投递问题。(#93)
+- Gateway 事件循环不可用时，cron 任务仍可独立发送 Feishu/Lark 卡片，并保证并发 worker 只初始化一次客户端。(#94)
+- 按 Hermes profile 隔离流式控制器与凭据，支持嵌套 gateway 平台配置和 Lark 域名。
+- 修复 CardKit 回复失败时的重建重试，并正确处理同消息 ID 的 follow-up 会话重入。(#96)
+
+### Added
+
+- Add `streaming.width_mode` with `default`, `compact`, and `fill` options to control the width of streaming and completion cards. (#81) Thanks @DarkMagicCK.
+- Add `display.platforms.feishu.show_tool_use` with a `display.show_tool_use` fallback to hide tool-use panels in both streaming and completion cards. It defaults to enabled for backward compatibility. (#91) Thanks @DongCarzy.
+
+### Fixed
+
+- Adapt to Hermes 0.19: support TurnRunner contexts and multiple stream callbacks, and fix card lifecycle handling for `/stop`, interrupts, queued follow-ups, and duplicate native delivery. (#93)
+- Allow cron jobs to deliver Feishu/Lark cards without an available gateway event loop, while safely initializing the client once across concurrent workers. (#94)
+- Isolate streaming controllers and credentials by Hermes profile, including nested gateway platform configuration and the Lark domain.
+- Retry CardKit rebuilds after reply failures and correctly handle same-message-ID follow-up session re-entry. (#96)
+
 ## [0.11.2] - 2026-07-01
 
 ### 修复

@@ -107,6 +107,10 @@ streaming:
       - [status, elapsed, context, model]
     show_label: false
   panel_expanded: false   # 完成态面板保持展开，默认 false
+display:
+  platforms:
+    feishu:
+      show_tool_use: true   # 展示流式和完成态卡片中的工具调用面板，默认 true
 ```
 
 **Header**（`streaming.header.enabled`）：控制卡片是否显示顶部状态栏。开启后根据状态自动着色 — 流式中蓝色、完成绿色、中断/错误红色。默认关闭。
@@ -130,6 +134,8 @@ streaming:
 **面板展开**（`panel_expanded`）：完成态卡片中推理面板和工具面板默认折叠，设为 `true` 保持展开。
 
 **卡片宽度**（`streaming.width_mode`）：控制卡片宽度模式，可选 `default`、`compact`、`fill`。默认：`default`。
+
+**工具调用面板**（`display.platforms.feishu.show_tool_use`）：控制是否展示工具调用面板。平台级配置优先于全局 `display.show_tool_use`，默认：`true`。该配置会在运行时重新读取。
 
 ---
 
