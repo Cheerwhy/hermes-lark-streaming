@@ -466,6 +466,7 @@ def build_complete_card(
     panel_expanded: bool = False,
     header_enabled: bool = False,
     body_text_size: str = "normal_v2",
+    show_tool_use: bool = True,
 ) -> dict[str, Any]:
     """完成态流式卡片 — 按 segments 顺序渲染."""
     elements: list[dict] = []
@@ -479,6 +480,8 @@ def build_complete_card(
                     element_id=None, text_element_id=None,
                 ))
         elif seg.type == SegmentType.TOOL:
+            if not show_tool_use:
+                continue
             start = seg.tool_offset
             end = seg.tool_end_offset if seg.tool_end_offset else len(all_tool_steps)
             steps = all_tool_steps[start:end]

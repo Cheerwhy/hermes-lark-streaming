@@ -70,6 +70,23 @@ class Config:
         return bool(display.get("show_reasoning", False))
 
     @property
+    def show_tool_use(self) -> bool:
+        """是否在卡片中展示工具调用面板.
+
+        优先级：display.platforms.feishu.show_tool_use → display.show_tool_use，
+        默认 True（保持向后兼容）。每次从磁盘重读以支持运行时切换。
+        """
+        display = self._reload().get("display")
+        if not isinstance(display, dict):
+            return True
+        platforms = display.get("platforms")
+        if isinstance(platforms, dict):
+            feishu = platforms.get("feishu")
+            if isinstance(feishu, dict) and "show_tool_use" in feishu:
+                return bool(feishu["show_tool_use"])
+        return bool(display.get("show_tool_use", True))
+
+    @property
     def feishu_app_id(self) -> str:
         return str(self._platform_cfg().get("app_id", ""))
 

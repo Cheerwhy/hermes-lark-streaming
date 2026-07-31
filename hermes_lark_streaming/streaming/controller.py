@@ -188,6 +188,14 @@ class StreamingController:
             if i < session.split_index:
                 continue
 
+            # show_tool_use=False: 流式态跳过所有 TOOL segment 处理
+            # （新建与 dirty 更新两条路径），只保留 reasoning/answer
+            if seg.type == SegmentType.TOOL and not self._cfg.show_tool_use:
+                if not seg.created:
+                    seg.created = True  # 防止 next flush 再次进入 not created 分支
+                seg.dirty = False
+                continue
+
             if not seg.created:
                 estimated = estimate_segment_elements(seg, all_steps)
                 if (
@@ -531,6 +539,7 @@ class StreamingController:
             panel_expanded=self._cfg.panel_expanded,
             header_enabled=False,
             body_text_size=self._cfg.body_text_size,
+            show_tool_use=self._cfg.show_tool_use,
         )
 
         try:
@@ -636,6 +645,7 @@ class StreamingController:
             panel_expanded=self._cfg.panel_expanded,
             header_enabled=self._cfg.header_enabled,
             body_text_size=self._cfg.body_text_size,
+            show_tool_use=self._cfg.show_tool_use,
         )
 
         streaming_closed = False
