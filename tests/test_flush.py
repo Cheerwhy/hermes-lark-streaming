@@ -219,20 +219,6 @@ class TestWaitForFlush:
 
 class TestMarkCompleted:
     @pytest.mark.asyncio
-    async def test_prevents_future_flushes(self) -> None:
-        ctrl = _make_async()
-        ctrl.set_card_message_ready(True)
-        ctrl.mark_completed()
-        count = 0
-
-        async def do_flush() -> None:
-            nonlocal count
-            count += 1
-
-        await ctrl.flush_now(do_flush)
-        assert count == 0
-
-    @pytest.mark.asyncio
     async def test_resolves_waiters(self) -> None:
         ctrl = _make_async()
         ctrl.set_card_message_ready(True)

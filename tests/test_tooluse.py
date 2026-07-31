@@ -112,34 +112,27 @@ class TestSanitizeDetail:
 
 
 class TestBasenameOnly:
-    def test_unix_path(self) -> None:
-        assert _basename_only("/home/user/file.py") == "file.py"
-
-    def test_windows_path(self) -> None:
-        assert _basename_only("C:\\Users\\file.py") == "file.py"
-
-    def test_trailing_slash(self) -> None:
-        assert _basename_only("/home/user/dir/") == "dir"
-
-    def test_empty_string(self) -> None:
-        assert _basename_only("") == ""
-
-    def test_just_filename(self) -> None:
-        assert _basename_only("file.py") == "file.py"
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("/home/user/file.py", "file.py"),
+            ("C:\\Users\\file.py", "file.py"),
+            ("/home/user/dir/", "dir"),
+            ("", ""),
+            ("file.py", "file.py"),
+        ],
+    )
+    def test_returns_basename(self, path: str, expected: str) -> None:
+        assert _basename_only(path) == expected
 
 
 class TestFormatDurationLabel:
-    def test_milliseconds(self) -> None:
-        assert _format_duration_label(500) == "500 ms"
-
-    def test_exactly_one_second(self) -> None:
-        assert _format_duration_label(1000) == "1.0 s"
-
-    def test_seconds(self) -> None:
-        assert _format_duration_label(2500) == "2.5 s"
-
-    def test_zero(self) -> None:
-        assert _format_duration_label(0) == "0 ms"
+    @pytest.mark.parametrize(
+        ("milliseconds", "expected"),
+        [(500, "500 ms"), (1_000, "1.0 s"), (2_500, "2.5 s"), (0, "0 ms")],
+    )
+    def test_formats_duration(self, milliseconds: float, expected: str) -> None:
+        assert _format_duration_label(milliseconds) == expected
 
 
 class TestResolveToolDescriptor:
@@ -170,31 +163,24 @@ class TestResolveToolDescriptor:
 
 
 class TestHumanizeToolName:
-    def test_dash_replaced(self) -> None:
-        assert _humanize_tool_name("web-search") == "Web search"
-
-    def test_underscore_replaced(self) -> None:
-        assert _humanize_tool_name("web_search") == "Web search"
-
-    def test_capitalized(self) -> None:
-        assert _humanize_tool_name("read") == "Read"
-
-    def test_empty_returns_tool(self) -> None:
-        assert _humanize_tool_name("") == "Tool"
-
-    def test_single_char(self) -> None:
-        assert _humanize_tool_name("x") == "X"
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("web-search", "Web search"),
+            ("web_search", "Web search"),
+            ("read", "Read"),
+            ("", "Tool"),
+            ("x", "X"),
+        ],
+    )
+    def test_humanizes_name(self, name: str, expected: str) -> None:
+        assert _humanize_tool_name(name) == expected
 
 
 class TestBuildDisplayBlock:
-    def test_none_returns_none(self) -> None:
-        assert _build_display_block(None) is None
-
-    def test_empty_string_returns_none(self) -> None:
-        assert _build_display_block("") is None
-
-    def test_whitespace_string_returns_none(self) -> None:
-        assert _build_display_block("   \n  ") is None
+    @pytest.mark.parametrize("content", [None, "", "   \n  "])
+    def test_empty_content_returns_none(self, content: str | None) -> None:
+        assert _build_display_block(content) is None
 
     def test_json_string_pretty_printed(self) -> None:
         result = _build_display_block('{"key": "value"}')

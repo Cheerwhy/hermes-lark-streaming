@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from hermes_lark_streaming.streaming.text import (
     extract_thinking_content,
     split_reasoning_text,
@@ -10,14 +12,9 @@ from hermes_lark_streaming.streaming.text import (
 
 
 class TestSplitReasoningText:
-    def test_none_returns_empty(self) -> None:
-        assert split_reasoning_text(None) == {}
-
-    def test_empty_string_returns_empty(self) -> None:
-        assert split_reasoning_text("") == {}
-
-    def test_whitespace_only_returns_empty(self) -> None:
-        assert split_reasoning_text("   \n  ") == {}
+    @pytest.mark.parametrize("text", [None, "", "   \n  "], ids=["none", "empty", "whitespace"])
+    def test_empty_input_returns_empty(self, text: str | None) -> None:
+        assert split_reasoning_text(text) == {}
 
     def test_plain_text_no_tags(self) -> None:
         assert split_reasoning_text("Hello world") == {"answer_text": "Hello world"}
@@ -35,24 +32,19 @@ class TestSplitReasoningText:
         # "Reasoning:\n" 单独存在不比前缀长，应走普通文本逻辑
         assert split_reasoning_text("Reasoning:\n") == {"answer_text": "Reasoning:\n"}
 
-    def test_thinking_tags(self) -> None:
-        text = "<thinking>deep thoughts</thinking>answer here"
+    @pytest.mark.parametrize(
+        ("tag", "reasoning", "answer"),
+        [
+            ("thinking", "deep thoughts", "answer here"),
+            ("thought", "reasoning", "the answer"),
+            ("antthinking", "model thoughts", "response"),
+        ],
+    )
+    def test_supported_reasoning_tags(self, tag: str, reasoning: str, answer: str) -> None:
+        text = f"<{tag}>{reasoning}</{tag}>{answer}"
         result = split_reasoning_text(text)
-        assert result["reasoning_text"] == "deep thoughts"
-        # strip_reasoning_tags 移除标签但保留标签间内容
-        assert "answer here" in result["answer_text"]
-
-    def test_thought_tags(self) -> None:
-        text = "<thought>reasoning</thought>the answer"
-        result = split_reasoning_text(text)
-        assert result["reasoning_text"] == "reasoning"
-        assert "the answer" in result["answer_text"]
-
-    def test_antthinking_tags(self) -> None:
-        text = "<antthinking>model thoughts</antthinking>response"
-        result = split_reasoning_text(text)
-        assert result["reasoning_text"] == "model thoughts"
-        assert "response" in result["answer_text"]
+        assert result["reasoning_text"] == reasoning
+        assert answer in result["answer_text"]
 
     def test_tags_with_whitespace(self) -> None:
         text = "< thinking >content< /thinking >rest"

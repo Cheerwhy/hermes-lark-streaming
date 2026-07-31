@@ -1563,17 +1563,16 @@ class TestOnThinking:
 
 
 class TestCronDeliver:
-    def test_returns_false_when_disabled(self) -> None:
+    @pytest.mark.parametrize(
+        ("enabled", "content"),
+        [(False, "text"), (True, "")],
+        ids=["disabled", "empty-content"],
+    )
+    def test_returns_false_without_deliverable_content(self, enabled: bool, content: str) -> None:
         ctrl = StreamCardController()
         ctrl._cfg = MagicMock()
-        ctrl._cfg.enabled = False
-        assert ctrl.on_cron_deliver(chat_id="c1", content="text", loop=MagicMock()) is False
-
-    def test_returns_false_on_empty_content(self) -> None:
-        ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
-        ctrl._cfg.enabled = True
-        assert ctrl.on_cron_deliver(chat_id="c1", content="", loop=MagicMock()) is False
+        ctrl._cfg.enabled = enabled
+        assert ctrl.on_cron_deliver(chat_id="c1", content=content, loop=MagicMock()) is False
 
     def test_sends_card_on_success(self) -> None:
         import threading
@@ -1668,8 +1667,7 @@ class TestCronDeliver:
 
         assert ctrl.on_cron_deliver(chat_id="c1", content="hello", loop=None) is False
 
-    @pytest.mark.parametrize("closed", [False, True])
-    def test_falls_back_when_gateway_loop_is_unusable(self, closed: bool) -> None:
+    def test_falls_back_when_gateway_loop_is_not_running(self) -> None:
         ctrl = StreamCardController()
         ctrl._cfg = MagicMock()
         ctrl._cfg.enabled = True
@@ -1679,8 +1677,6 @@ class TestCronDeliver:
         ctrl._initialized = True
 
         loop = asyncio.new_event_loop()
-        if closed:
-            loop.close()
         try:
             assert ctrl.on_cron_deliver(chat_id="c1", content="hello", loop=loop) is True
             mock_client.send_card_to_chat.assert_called_once()

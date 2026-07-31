@@ -48,24 +48,18 @@ def _client_with(**methods: AsyncMock) -> FeishuClient:
 
 
 @pytest.mark.asyncio
-async def test_cardkit_create_retries_gateway_timeout_once() -> None:
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        (2200, "Gateway timeout. Please try again later."),
+        (300000, "Server Internal Error"),
+    ],
+    ids=["gateway-timeout", "server-internal-error"],
+)
+async def test_cardkit_create_retries_transient_errors_once(code: int, message: str) -> None:
     create = AsyncMock(
         side_effect=[
-            _Resp(ok=False, code=2200, msg="Gateway timeout. Please try again later."),
-            _Resp(ok=True, data=SimpleNamespace(card_id="card-ok")),
-        ]
-    )
-    client = _client_with(card_create=create)
-
-    assert await client.cardkit_create({"schema": "2.0"}) == "card-ok"
-    assert create.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_cardkit_create_retries_server_internal_error() -> None:
-    create = AsyncMock(
-        side_effect=[
-            _Resp(ok=False, code=300000, msg="Server Internal Error"),
+            _Resp(ok=False, code=code, msg=message),
             _Resp(ok=True, data=SimpleNamespace(card_id="card-ok")),
         ]
     )

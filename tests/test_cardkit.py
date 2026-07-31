@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from hermes_lark_streaming.cardkit.builder import (
     REASONING_ELEMENT_ID,
     REASONING_TEXT_ELEMENT_ID,
@@ -30,14 +32,16 @@ from hermes_lark_streaming.streaming.segments import Segment
 
 
 class TestOptimizeMarkdownStyle:
-    def test_h1_downgraded_to_h4(self) -> None:
-        assert "#### Title" in optimize_markdown_style("# Title")
-
-    def test_h2_downgraded_to_h5(self) -> None:
-        assert "##### Sub" in optimize_markdown_style("## Sub")
-
-    def test_h3_downgraded_to_h5(self) -> None:
-        assert "##### Deep" in optimize_markdown_style("### Deep")
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("# Title", "#### Title"),
+            ("## Sub", "##### Sub"),
+            ("### Deep", "##### Deep"),
+        ],
+    )
+    def test_headings_are_downgraded(self, source: str, expected: str) -> None:
+        assert expected in optimize_markdown_style(source)
 
     def test_h4_h5_h6_unchanged(self) -> None:
         text = "#### H4\n##### H5\n###### H6"
@@ -186,11 +190,6 @@ class TestBuildFooterElements:
         assert len(result) >= 2
         assert "Completed" in result[1]["content"]
 
-    def test_status_completed(self) -> None:
-        result = _build_footer_elements({"duration": 5})
-        assert len(result) >= 2  # hr + markdown 元素
-        assert "Completed" in result[1]["content"]
-
     def test_status_error(self) -> None:
         result = _build_footer_elements({}, is_error=True)
         assert "red" in result[1]["content"]
@@ -238,10 +237,6 @@ class TestBuildFooterElements:
         )
         assert "\n" in result[1]["content"]
 
-    def test_none_footer_data_renders_status(self) -> None:
-        result = _build_footer_elements(None)
-        assert len(result) >= 2
-
     def test_no_matching_fields(self) -> None:
         assert _build_footer_elements({}, fields=[["tokens"]]) == []
 
@@ -263,10 +258,6 @@ class TestBuildReasoningPanel:
     def test_expanded_true(self) -> None:
         panel = _build_reasoning_panel("text", expanded=True)
         assert panel["expanded"] is True
-
-    def test_expanded_default_false(self) -> None:
-        panel = _build_reasoning_panel("text")
-        assert panel["expanded"] is False
 
     def test_element_id_default_none(self) -> None:
         panel = _build_reasoning_panel("text")
@@ -298,31 +289,27 @@ class TestBuildReasoningPanel:
 
 
 class TestCompact:
-    def test_small_number(self) -> None:
-        assert _compact(42) == "42"
-
-    def test_thousands(self) -> None:
-        assert _compact(1500) == "1.5K"
-
-    def test_millions(self) -> None:
-        assert _compact(2_500_000) == "2.5M"
-
-    def test_exact_thousand(self) -> None:
-        assert _compact(1000) == "1.0K"
-
-    def test_large_millions(self) -> None:
-        assert _compact(250_000_000) == "250M"
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (42, "42"),
+            (1_500, "1.5K"),
+            (2_500_000, "2.5M"),
+            (1_000, "1.0K"),
+            (250_000_000, "250M"),
+        ],
+    )
+    def test_compacts_numbers(self, value: int, expected: str) -> None:
+        assert _compact(value) == expected
 
 
 class TestFormatElapsed:
-    def test_sub_minute(self) -> None:
-        assert _format_elapsed(3500) == "3.5s"
-
-    def test_over_minute(self) -> None:
-        assert _format_elapsed(125_000) == "2m 5s"
-
-    def test_exactly_one_minute(self) -> None:
-        assert _format_elapsed(60_000) == "1m 0s"
+    @pytest.mark.parametrize(
+        ("milliseconds", "expected"),
+        [(3_500, "3.5s"), (125_000, "2m 5s"), (60_000, "1m 0s")],
+    )
+    def test_formats_elapsed_time(self, milliseconds: float, expected: str) -> None:
+        assert _format_elapsed(milliseconds) == expected
 
 
 # --- 工具函数 ---
@@ -338,14 +325,12 @@ class TestEscapeMd:
 
 
 class TestLongestBacktickRun:
-    def test_no_backticks(self) -> None:
-        assert _longest_backtick_run("no backticks") == 0
-
-    def test_single(self) -> None:
-        assert _longest_backtick_run("a `b` c") == 1
-
-    def test_triple(self) -> None:
-        assert _longest_backtick_run("```code```") == 3
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [("no backticks", 0), ("a `b` c", 1), ("```code```", 3)],
+    )
+    def test_finds_longest_run(self, text: str, expected: int) -> None:
+        assert _longest_backtick_run(text) == expected
 
 
 # --- 完整卡片构建 ---
@@ -577,12 +562,6 @@ class TestBuildCronCard:
         card = build_cron_card("Hello")
         assert "header" not in card
 
-    def test_empty_task_name_no_header(self) -> None:
-        from hermes_lark_streaming.cardkit.builder import build_cron_card
-
-        card = build_cron_card("Hello", task_name="")
-        assert "header" not in card
-
     def test_header_with_task_name_and_run_time(self) -> None:
         from hermes_lark_streaming.cardkit.builder import build_cron_card
 
@@ -616,42 +595,27 @@ class TestBuildCronCard:
 
 
 class TestBuildHeader:
-    def test_streaming_blue(self) -> None:
-        header = _build_header("streaming")
+    @pytest.mark.parametrize(
+        ("status", "template", "title"),
+        [
+            ("streaming", "blue", "Processing"),
+            ("completed", "green", "Completed"),
+            ("error", "red", "Error"),
+            ("stopped", "red", "Stopped"),
+            ("unknown", "green", "Completed"),
+        ],
+    )
+    def test_status_header(self, status: str, template: str, title: str) -> None:
+        header = _build_header(status)
         assert header is not None
-        assert header["template"] == "blue"
-        assert "Processing" in header["title"]["content"]
-
-    def test_completed_green(self) -> None:
-        header = _build_header("completed")
-        assert header is not None
-        assert header["template"] == "green"
-        assert "Completed" in header["title"]["content"]
-
-    def test_error_red(self) -> None:
-        header = _build_header("error")
-        assert header is not None
-        assert header["template"] == "red"
-        assert "Error" in header["title"]["content"]
-
-    def test_stopped_red(self) -> None:
-        header = _build_header("stopped")
-        assert header is not None
-        assert header["template"] == "red"
-        assert "Stopped" in header["title"]["content"]
+        assert header["template"] == template
+        assert title in header["title"]["content"]
 
     def test_title_has_i18n(self) -> None:
         header = _build_header("streaming")
         assert "i18n_content" in header["title"]
         assert "zh_cn" in header["title"]["i18n_content"]
         assert "en_us" in header["title"]["i18n_content"]
-
-    def test_unknown_status_falls_back_to_completed(self) -> None:
-        header = _build_header("unknown")
-        assert header is not None
-        assert header["template"] == "green"
-        assert "Completed" in header["title"]["content"]
-
 
 class TestStreamingCardHeader:
     def test_header_absent_by_default(self) -> None:

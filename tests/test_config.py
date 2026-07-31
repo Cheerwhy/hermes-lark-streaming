@@ -6,6 +6,8 @@ import os
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from hermes_lark_streaming.config import Config
 
 
@@ -25,12 +27,9 @@ class TestEnabled:
         cfg = _make_config({"streaming": {"enabled": False}})
         assert cfg.enabled is False
 
-    def test_enabled_missing(self) -> None:
-        cfg = _make_config({"streaming": {}})
-        assert cfg.enabled is False
-
-    def test_no_streaming_section(self) -> None:
-        cfg = _make_config({})
+    @pytest.mark.parametrize("raw", [{"streaming": {}}, {}], ids=["missing-key", "missing-section"])
+    def test_enabled_defaults_false_when_missing(self, raw: dict[str, Any]) -> None:
+        cfg = _make_config(raw)
         assert cfg.enabled is False
 
     def test_streaming_section_not_dict(self) -> None:
@@ -47,12 +46,13 @@ class TestFooterFields:
         cfg = _make_config({"streaming": {"footer": {"fields": ["status", "elapsed"]}}})
         assert cfg.footer_fields == [["status", "elapsed"]]
 
-    def test_empty_fields_returns_default(self) -> None:
-        cfg = _make_config({"streaming": {"footer": {"fields": []}}})
-        assert cfg.footer_fields == [["status", "elapsed", "context", "model"]]
-
-    def test_no_footer_returns_default(self) -> None:
-        cfg = _make_config({"streaming": {}})
+    @pytest.mark.parametrize(
+        "raw",
+        [{"streaming": {"footer": {"fields": []}}}, {"streaming": {}}],
+        ids=["empty-fields", "missing-footer"],
+    )
+    def test_empty_footer_configuration_returns_default(self, raw: dict[str, Any]) -> None:
+        cfg = _make_config(raw)
         assert cfg.footer_fields == [["status", "elapsed", "context", "model"]]
 
     def test_footer_not_dict_returns_default(self) -> None:
@@ -73,12 +73,13 @@ class TestHeaderEnabled:
         cfg = _make_config({"streaming": {"header": {"enabled": False}}})
         assert cfg.header_enabled is False
 
-    def test_missing_enabled_key_defaults_false(self) -> None:
-        cfg = _make_config({"streaming": {"header": {}}})
-        assert cfg.header_enabled is False
-
-    def test_missing_header_section_defaults_false(self) -> None:
-        cfg = _make_config({"streaming": {}})
+    @pytest.mark.parametrize(
+        "raw",
+        [{"streaming": {"header": {}}}, {"streaming": {}}],
+        ids=["missing-key", "missing-section"],
+    )
+    def test_header_enabled_defaults_false_when_missing(self, raw: dict[str, Any]) -> None:
+        cfg = _make_config(raw)
         assert cfg.header_enabled is False
 
     def test_header_not_dict_defaults_false(self) -> None:
@@ -95,12 +96,13 @@ class TestFooterEnabled:
         cfg = _make_config({"streaming": {"footer": {"enabled": False}}})
         assert cfg.footer_enabled is False
 
-    def test_missing_enabled_key_defaults_true(self) -> None:
-        cfg = _make_config({"streaming": {"footer": {}}})
-        assert cfg.footer_enabled is True
-
-    def test_no_footer_section_defaults_true(self) -> None:
-        cfg = _make_config({"streaming": {}})
+    @pytest.mark.parametrize(
+        "raw",
+        [{"streaming": {"footer": {}}}, {"streaming": {}}],
+        ids=["missing-key", "missing-section"],
+    )
+    def test_footer_enabled_defaults_true_when_missing(self, raw: dict[str, Any]) -> None:
+        cfg = _make_config(raw)
         assert cfg.footer_enabled is True
 
     def test_footer_not_dict_defaults_true(self) -> None:
@@ -109,13 +111,10 @@ class TestFooterEnabled:
 
 
 class TestFooterShowLabel:
-    def test_true(self) -> None:
-        cfg = _make_config({"streaming": {"footer": {"show_label": True}}})
-        assert cfg.footer_show_label is True
-
-    def test_false(self) -> None:
-        cfg = _make_config({"streaming": {"footer": {"show_label": False}}})
-        assert cfg.footer_show_label is False
+    @pytest.mark.parametrize("value", [True, False])
+    def test_reads_boolean_value(self, value: bool) -> None:
+        cfg = _make_config({"streaming": {"footer": {"show_label": value}}})
+        assert cfg.footer_show_label is value
 
     def test_missing_defaults_false(self) -> None:
         cfg = _make_config({"streaming": {"footer": {}}})
