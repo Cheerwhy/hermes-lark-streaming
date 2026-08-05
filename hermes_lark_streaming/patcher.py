@@ -35,6 +35,7 @@ _HOOK_NAMES = [
     "STOP",
     "INTERRUPT",
     "BG_DELIVER",
+    "CLARIFY",
 ]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
@@ -52,6 +53,7 @@ MK_ABORT, MK_ABORT_END = MARKERS[10]
 MK_STOP, MK_STOP_END = MARKERS[11]
 MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[12]
 MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[13]
+MK_CLARIFY, MK_CLARIFY_END = MARKERS[14]
 
 _BACKUP_SUFFIX = ".hermes_lark.bak"
 
@@ -199,6 +201,7 @@ _ANCHOR_CHECKS: list[tuple[str, tuple[str, ...], str]] = [
     ("images, text_content = adapter.extract_images(response)", (), "background deliver"),
     ("_already_sent = bool(", (), "complete"),
     ("Discarding stale agent result", (), "abort"),
+    ("agent.clarify_callback = _clarify_callback_sync", (), "clarify_callback"),
 ]
 
 
@@ -604,6 +607,43 @@ def _bg_deliver_hook(indent: str) -> str:
     )
 
 
+def _clarify_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_CLARIFY,
+        MK_CLARIFY_END,
+        [
+            "try:",
+            "    from hermes_lark_streaming.patch import on_clarify_enter, on_clarify_exit",
+            "    _lark_clarify_orig = agent.clarify_callback",
+            "    def _lark_clarify_wrapper(question, choices, multi_select=False):",
+            "        try:",
+            "            _lark_clarify_msg_id = ctx.event_message_id",
+            "            _lark_clarify_chat_id = ctx._status_chat_id",
+            "            _lark_clarify_sk = ctx.session_key",
+            "        except NameError:",
+            "            _lark_clarify_msg_id = event_message_id",
+            "            _lark_clarify_chat_id = None",
+            "            _lark_clarify_sk = None",
+            "        on_clarify_enter(",
+            "            message_id=_lark_clarify_msg_id,",
+            "            chat_id=_lark_clarify_chat_id,",
+            "            session_key=_lark_clarify_sk,",
+            "        )",
+            "        try:",
+            "            return _lark_clarify_orig(question, choices, multi_select)",
+            "        finally:",
+            "            on_clarify_exit(",
+            "                message_id=_lark_clarify_msg_id,",
+            "                chat_id=_lark_clarify_chat_id,",
+            "                session_key=_lark_clarify_sk,",
+            "            )",
+            "    agent.clarify_callback = _lark_clarify_wrapper",
+            *_hook_exception_lines("clarify"),
+        ],
+    )
+
+
 def _remove_block(content: str, begin: str, end: str) -> str:
     lines = content.splitlines(keepends=True)
     result: list[str] = []
@@ -786,6 +826,7 @@ class Patcher:
             ("reasoning", "reasoning", _find_reasoning_site(tree, lines)),
             ("background_review", "background_review", _find_background_review_site(tree, lines)),
             ("bg_deliver", "bg_deliver", _find_bg_deliver_site(tree, lines)),
+            ("clarify", "clarify", _find_clarify_site(tree, lines)),
         ]
         hook_defs.extend(
             ("answer", f"answer callback {index}", loc)
@@ -817,6 +858,7 @@ class Patcher:
             "reasoning": _reasoning_hook,
             "background_review": _background_review_hook,
             "bg_deliver": _bg_deliver_hook,
+            "clarify": _clarify_hook,
         }
         for idx, indent, fn_name in sites:
             hook = _HOOK_FNS[fn_name](indent)
@@ -965,6 +1007,13 @@ def _find_background_review_site(tree: ast.Module, lines: list[str]) -> tuple[in
 def _find_bg_deliver_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
     for i, line in enumerate(lines):
         if line.strip() == "images, text_content = adapter.extract_images(response)":
+            return i + 1, _safe_indent(lines, i)
+    return None
+
+
+def _find_clarify_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    for i, line in enumerate(lines):
+        if line.strip() == "agent.clarify_callback = _clarify_callback_sync":
             return i + 1, _safe_indent(lines, i)
     return None
 

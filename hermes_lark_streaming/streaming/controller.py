@@ -36,6 +36,7 @@ from .segment_helper import (
 from .segments import Segment, SegmentState, SegmentType
 from .session import SessionState
 from .text import split_reasoning_text
+from .tooluse import ToolUseTracker
 
 if TYPE_CHECKING:
     from ..config import Config
@@ -71,9 +72,12 @@ class StreamingController:
     _cleanup: Callable[[str], None]
     _cleanup_session: Callable[[CardSession], None]
     _flush_deferred_background_reviews: Callable[[CardSession], None]
+    _wait_for_card_creation: Callable[[CardSession], Coroutine[Any, Any, bool]]
 
     def _schedule_flush(self, session: CardSession) -> None:
         if session.state == SessionState.IDLE or session.state.is_terminal:
+            return
+        if session.state == SessionState.CLARIFY_PAUSED:
             return
         if session.guard.should_skip("_schedule_flush"):
             return
@@ -499,6 +503,83 @@ class StreamingController:
             return "failed"
         return "split"
 
+    async def _seal_current_card(
+        self,
+        session: CardSession,
+        seal_segments: list[Segment],
+        *,
+        card_id: str | None = None,
+        sequence: int | None = None,
+    ) -> None:
+        """封印指定卡（默认 session.card_id）：close_streaming + 全量重建。失败仅记录日志。
+
+        card_id 用于 session 已切到新卡、仍需封印旧卡的场景（clarify 切卡）；
+        sequence 传入旧卡续用的递增序列（CardKit 要求单调递增，不能用新卡的计数）。
+        """
+        assert self._client is not None
+        old_card_id = card_id or session.card_id
+        if not old_card_id:
+            return
+        if session.image_resolver:
+            await _resolve_answer_images(
+                seal_segments,
+                session.image_resolver,
+                log_prefix="CardKit seal",
+            )
+        all_steps = session.tool_use.build_display_steps()
+        seal_card = build_complete_card(
+            segments=seal_segments,
+            all_tool_steps=all_steps,
+            footer_fields=[],
+            footer_show_label=False,
+            footer_enabled=False,
+            panel_expanded=self._cfg.panel_expanded,
+            header_enabled=False,
+            body_text_size=self._cfg.body_text_size,
+            show_tool_use=self._cfg.show_tool_use,
+            width_mode=self._cfg.width_mode,
+        )
+        try:
+            seq = session.sequence if sequence is None else sequence
+            seq += 1
+            await self._client.cardkit_close_streaming(old_card_id, sequence=seq)
+            seq += 1
+            await self._client.cardkit_update(old_card_id, seal_card, sequence=seq)
+        except Exception:
+            _logger.warning(
+                "CardKit seal failed for old card %s, continuing",
+                old_card_id[:12],
+                exc_info=True,
+            )
+
+    async def _create_streaming_card(self, session: CardSession) -> tuple[str, str] | None:
+        """创建空白流式卡并挂到 anchor，返回 (card_id, msg_id)。失败返回 None。
+
+        不修改 session.card_id —— 调用方负责 set_card。
+        """
+        assert self._client is not None
+        try:
+            card = build_streaming_card_v2(
+                show_tool_use=False,
+                show_reasoning=False,
+                show_streaming_element=False,
+                header_enabled=self._cfg.header_enabled,
+                text_size=self._cfg.body_text_size,
+                width_mode=self._cfg.width_mode,
+            )
+            new_card_id = await self._client.cardkit_create(card)
+            new_msg_id = await self._client.reply_card_by_id(
+                session.anchor_id or session.message_id, new_card_id,
+            )
+        except Exception:
+            _logger.warning(
+                "CardKit create streaming card failed for msg=%s",
+                session.message_id[:12],
+                exc_info=True,
+            )
+            return None
+        return new_card_id, new_msg_id
+
     async def _do_split_card(
         self,
         session: CardSession,
@@ -515,7 +596,6 @@ class StreamingController:
         segment_state = session.segment_state
         assert segment_state is not None
         segments = segment_state.segments
-        all_steps = session.tool_use.build_display_steps()
         seal_start_idx = session.split_index
 
         if actions and not await self._do_batch_update(
@@ -524,61 +604,19 @@ class StreamingController:
             return False
 
         seal_segments = [s for s in segments[seal_start_idx:split_idx] if s.created]
-        if session.image_resolver:
-            await _resolve_answer_images(
-                seal_segments,
-                session.image_resolver,
-                log_prefix="CardKit seal",
-            )
 
-        seal_card = build_complete_card(
-            segments=seal_segments,
-            all_tool_steps=all_steps,
-            footer_fields=[],
-            footer_show_label=False,
-            footer_enabled=False,
-            panel_expanded=self._cfg.panel_expanded,
-            header_enabled=False,
-            body_text_size=self._cfg.body_text_size,
-            show_tool_use=self._cfg.show_tool_use,
-            width_mode=self._cfg.width_mode,
-        )
-
-        try:
-            card = build_streaming_card_v2(
-                show_tool_use=False,
-                show_reasoning=False,
-                show_streaming_element=False,
-                header_enabled=self._cfg.header_enabled,
-                text_size=self._cfg.body_text_size,
-                width_mode=self._cfg.width_mode,
-            )
-            new_card_id = await self._client.cardkit_create(card)
-            new_msg_id = await self._client.reply_card_by_id(session.anchor_id or session.message_id, new_card_id)
-        except Exception:
-            _logger.warning(
-                "CardKit split fallback: create next card failed, continue on current card",
-                exc_info=True,
-            )
-            # 拆卡失败时降级为继续写当前卡，并禁用后续拆卡重试以避免反复卡在同一边界。
-            session.split_disabled = True
+        # create → seal → set_card（顺序与原实现一致）
+        new_card = await self._create_streaming_card(session)
+        if new_card is None:
+            session.split_disabled = True  # 降级：继续写当前卡
             return True
 
-        try:
-            session.sequence += 1
-            await self._client.cardkit_close_streaming(old_card_id, sequence=session.sequence)
-            session.sequence += 1
-            await self._client.cardkit_update(old_card_id, seal_card, sequence=session.sequence)
-        except Exception:
-            _logger.warning(
-                "CardKit seal failed for old card %s, continuing",
-                old_card_id[:12],
-                exc_info=True,
-            )
+        await self._seal_current_card(session, seal_segments)
 
+        new_card_id, new_msg_id = new_card
         session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
-        session.element_count = 1  # loading
-        session.sequence = 1
+        session.element_count = 1  # loading element
+        session.sequence = 1  # 新卡从 1 重新计数
         session.split_disabled = False
         session.split_index = split_idx
         for seg in segments[split_idx:]:
@@ -592,6 +630,68 @@ class StreamingController:
             new_card_id[:12],
         )
         return True
+
+    async def _do_clarify_split(self, session: CardSession) -> bool:
+        """clarify 工具结束后切卡：建新卡 + 封旧卡。
+
+        返回 False 表示未切卡（无卡可封，或建卡失败降级继续写旧卡）。
+        """
+        await self._wait_for_card_creation(session)
+        if not session.has_card or session.state == SessionState.FAILED:
+            _logger.info(
+                "clarify_split: no card to seal, msg=%s state=%s",
+                session.message_id[:12], session.state,
+            )
+            return False
+
+        # 先禁拆卡再等 flush：否则进行中的 flush 可能先拆卡，随后被本流程封印成空白卡。
+        session.split_disabled = True
+        try:
+            await session.flush.wait_for_flush()
+            try:
+                await session.flush.flush_now(lambda: self._do_flush(session))
+            except Exception:
+                _logger.debug("clarify_split: final flush failed", exc_info=True)
+
+            # 先建新卡后封旧卡（与拆卡一致）：建卡失败时旧卡未 close，可降级继续流式。
+            new_card = await self._create_streaming_card(session)
+            if new_card is None:
+                _logger.warning(
+                    "clarify_split: create new card failed, continuing on current card, msg=%s",
+                    session.message_id[:12],
+                )
+                return False
+
+            # 先切到新卡再封旧卡：任意时刻被取消（超时兜底）时，session 指向的都是
+            # 未 close 的卡，后续 flush 不会写到已关闭的旧卡。
+            # seal 必须显式传旧 card_id + 旧 sequence（session 已切新卡，
+            # 且 CardKit sequence 要求单调递增，不能用新卡的计数）。
+            old_card_id = session.card_id
+            old_seq = session.sequence
+            new_card_id, new_msg_id = new_card
+            session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
+            session.sequence = 1  # 新卡从 1 重新计数
+
+            await self._seal_current_card(
+                session,
+                session.active_segments(),
+                card_id=old_card_id,
+                sequence=old_seq,
+            )
+
+            # 重置内容，新卡承载 clarify 后的输出
+            session.segment_state = SegmentState()
+            session.split_index = 0
+            session.element_count = 1  # loading element（与拆卡一致）
+            session.tool_use = ToolUseTracker()
+
+            _logger.info(
+                "clarify_split: sealed old + new card msg=%s card=%s",
+                session.message_id[:12], new_card_id[:12],
+            )
+            return True
+        finally:
+            session.split_disabled = False  # 取消/异常/失败均恢复拆卡能力
 
     def _handle_flush_error(self, e: FeishuAPIError) -> None:
         if e.code == CARDKIT_RATE_LIMITED:
