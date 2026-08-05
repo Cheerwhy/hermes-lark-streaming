@@ -425,6 +425,242 @@ def test_background_review_after_flush_not_deferred() -> None:
     assert sent == []
 
 
+# ── Clarify 卡片切换 ──
+
+
+@pytest.mark.asyncio
+async def test_clarify_split_seals_old_and_creates_new() -> None:
+    """_do_clarify_split 封旧卡 + 建新卡 + 重置状态。"""
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_clarify")
+    session.state = SessionState.STREAMING
+    session.card_id = "old_card"
+    session.card_msg_id = "old_msg"
+    session.anchor_id = "anchor_msg"
+    session.sequence = 30  # 旧卡已流式很久，sequence 远大于新卡起始值
+    session.segment_state.on_answer_delta("content before clarify")
+    session.tool_use.record_start("clarify")
+    session.segment_state.on_tool_event(1)
+    session.flush.set_card_message_ready(True)
+    for seg in session.segment_state.segments:
+        seg.created = True
+    ctrl._sessions["msg_clarify"] = session
+
+    # mock _do_flush 为空，避免 final flush 递增旧卡 sequence 干扰断言
+    async def fake_flush(_session) -> None:
+        pass
+
+    with patch.object(ctrl, "_do_flush", side_effect=fake_flush):
+        result = await ctrl._do_clarify_split(session)
+
+    assert result is True
+    client = ctrl._client
+    # 旧卡被封印（close/update 目标是旧卡，而不是切卡后的新卡）
+    assert client.cardkit_close_streaming.await_count >= 1
+    assert client.cardkit_update.await_count >= 1
+    assert client.cardkit_close_streaming.await_args.args[0] == "old_card"
+    assert client.cardkit_update.await_args.args[0] == "old_card"
+    # seal 必须用旧卡续用的递增 sequence（CardKit 要求单调递增，不能用新卡的 2/3）
+    assert client.cardkit_close_streaming.await_args.kwargs["sequence"] == 31
+    assert client.cardkit_update.await_args.kwargs["sequence"] == 32
+    # 新卡已创建
+    assert session.card_id == "card_id_abc"
+    assert session.card_msg_id == "msg_id_reply"
+    # 状态重置
+    assert len(session.segment_state.segments) == 0
+    assert len(session.tool_use.build_display_steps()) == 0
+    assert session.split_index == 0
+    assert session.element_count == 1  # 新卡自带 loading element
+
+
+@pytest.mark.asyncio
+async def test_clarify_split_no_card_skips_seal() -> None:
+    """无活跃卡片时 _do_clarify_split 直接返回 False。"""
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_clarify")
+    session.state = SessionState.STREAMING
+    ctrl._sessions["msg_clarify"] = session
+
+    result = await ctrl._do_clarify_split(session)
+
+    assert result is False
+    assert ctrl._client.cardkit_close_streaming.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_clarify_split_create_failure_continues_on_old_card() -> None:
+    """建新卡失败 → 不封旧卡，降级继续写旧卡（内容不丢）。"""
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_clarify")
+    session.state = SessionState.STREAMING
+    session.card_id = "old_card"
+    session.flush.set_card_message_ready(True)
+    ctrl._sessions["msg_clarify"] = session
+
+    ctrl._client.cardkit_create = AsyncMock(side_effect=Exception("create failed"))
+
+    result = await ctrl._do_clarify_split(session)
+
+    assert result is False
+    # 旧卡未被封印，仍可继续流式
+    assert ctrl._client.cardkit_close_streaming.await_count == 0
+    assert session.card_id == "old_card"
+    assert session.state == SessionState.STREAMING
+    assert session.split_disabled is False  # 恢复拆卡能力
+
+
+@pytest.mark.asyncio
+async def test_clarify_split_seal_failure_still_switches_card() -> None:
+    """封旧卡失败（仅记录日志）不影响挂新卡。"""
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_clarify")
+    session.state = SessionState.STREAMING
+    session.card_id = "old_card"
+    session.card_msg_id = "old_msg"
+    session.anchor_id = "anchor_msg"
+    session.flush.set_card_message_ready(True)
+    ctrl._sessions["msg_clarify"] = session
+
+    ctrl._client.cardkit_close_streaming = AsyncMock(side_effect=Exception("seal failed"))
+
+    result = await ctrl._do_clarify_split(session)
+
+    assert result is True
+    assert session.card_id == "card_id_abc"  # 新卡已挂上
+
+
+def test_on_clarify_enter_only_pauses_not_seals() -> None:
+    """on_clarify_enter 只设 CLARIFY_PAUSED，不封卡。"""
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_clarify")
+    session.state = SessionState.STREAMING
+    session.card_id = "old_card"
+    ctrl._sessions["msg_clarify"] = session
+
+    ctrl.on_clarify_enter(message_id="msg_clarify")
+
+    assert session.state == SessionState.CLARIFY_PAUSED
+    # 没有封卡 API 调用
+    assert ctrl._client.cardkit_close_streaming.await_count == 0
+
+
+def test_on_clarify_enter_skips_non_streaming_session() -> None:
+    """非 STREAMING 状态不触发 clarify 暂停。"""
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_clarify")
+    session.state = SessionState.IDLE
+    ctrl._sessions["msg_clarify"] = session
+
+    ctrl.on_clarify_enter(message_id="msg_clarify")
+
+    assert session.state == SessionState.IDLE
+
+
+def test_on_clarify_exit_sets_pending_flag_and_resumes() -> None:
+    """on_clarify_exit 设待封卡标志 + 恢复 STREAMING，不立即封卡。"""
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_clarify")
+    session.state = SessionState.CLARIFY_PAUSED
+    ctrl._sessions["msg_clarify"] = session
+
+    ctrl.on_clarify_exit(message_id="msg_clarify")
+
+    assert session.state == SessionState.STREAMING
+    assert session.clarify_pending_split is True
+    # 没有封卡 API 调用
+    assert ctrl._client.cardkit_close_streaming.await_count == 0
+
+
+def test_on_clarify_exit_skips_non_clarify_paused_session() -> None:
+    """非 CLARIFY_PAUSED 状态不触发 exit 逻辑。"""
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_clarify")
+    session.state = SessionState.ABORTED
+    ctrl._sessions["msg_clarify"] = session
+
+    ctrl.on_clarify_exit(message_id="msg_clarify")
+
+    assert session.state == SessionState.ABORTED
+    assert session.clarify_pending_split is False
+
+
+@pytest.mark.asyncio
+async def test_clarify_split_triggered_on_tool_completed() -> None:
+    """clarify 工具 completed + pending_split → 触发封卡+建新卡。"""
+    ctrl = _setup_ctrl()
+    loop = asyncio.get_running_loop()
+    ctrl._loop = loop
+    session = CardSession("msg_tool", "chat", loop)
+    session.state = SessionState.STREAMING
+    session.card_id = "old_card"
+    session.card_msg_id = "old_msg"
+    session.anchor_id = "anchor_msg"
+    session.flush.set_card_message_ready(True)
+    session.clarify_pending_split = True
+    session.segment_state.on_tool_event(0)
+    ctrl._sessions["msg_tool"] = session
+
+    # mock _do_flush 避免复杂 segment 逻辑
+    async def fake_flush(_session):
+        pass
+
+    with patch.object(ctrl, "_do_flush", side_effect=fake_flush):
+        # tool.completed 事件（在 agent 线程）
+        await asyncio.to_thread(
+            ctrl.on_tool_update,
+            message_id="msg_tool",
+            tool_name="clarify",
+            status="completed",
+            detail="answer",
+        )
+
+    # 封卡+建新卡已触发
+    assert session.clarify_pending_split is False
+    assert ctrl._client.cardkit_close_streaming.await_count >= 1
+    assert session.card_id == "card_id_abc"
+
+
+def test_clarify_tool_completed_without_pending_does_not_split() -> None:
+    """非 pending 状态的 clarify completed 不触发封卡。"""
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_clarify")
+    session.state = SessionState.STREAMING
+    session.card_id = "old_card"
+    session.clarify_pending_split = False
+    ctrl._sessions["msg_clarify"] = session
+
+    ctrl.on_tool_update(
+        message_id="msg_clarify", tool_name="clarify", status="completed", detail="x",
+    )
+
+    # 没有封卡
+    assert ctrl._client.cardkit_close_streaming.await_count == 0
+    assert session.card_id == "old_card"
+
+
+def test_clarify_pending_requires_exact_tool_name() -> None:
+    """pending 标志只对精确工具名 clarify 触发切卡，不匹配时保留标志并告警。"""
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_clarify")
+    session.state = SessionState.STREAMING
+    session.card_id = "old_card"
+    session.clarify_pending_split = True
+    ctrl._sessions["msg_clarify"] = session
+
+    with patch.object(ctrl, "_schedule_clarify_split") as mock_split:
+        ctrl.on_tool_update(
+            message_id="msg_clarify",
+            tool_name="data_clarifier",
+            status="completed",
+            detail="x",
+        )
+
+    # 不精确匹配：不切卡，pending 保留，且打 warning
+    mock_split.assert_not_called()
+    assert session.clarify_pending_split is True
+    assert session.card_id == "old_card"
+
+
 # ── 辅助函数 ──
 
 

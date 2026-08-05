@@ -250,10 +250,45 @@ class StreamCardController(StreamingController):
                 error=detail if is_error else "",
                 output="" if is_error else detail,
             )
+            # clarify 工具 ended 且有待封卡标志 → 封旧卡 + 建新卡
+            if session.clarify_pending_split:
+                if tool_name and tool_name.strip().lower() == "clarify":
+                    session.clarify_pending_split = False
+                    self._schedule_clarify_split(session)
+                else:
+                    # pending 标志残留但工具名不匹配（如上游改名）——记录以便排查，
+                    # 避免切卡静默失效。
+                    _logger.warning(
+                        "clarify_pending_split set but tool '%s' did not match, msg=%s",
+                        tool_name,
+                        session.message_id[:12],
+                    )
 
         session.segment_state.on_tool_event(len(session.tool_use.build_display_steps()))
         self._schedule_flush(session)
         return True
+
+    def _schedule_clarify_split(self, session: CardSession) -> None:
+        """封旧卡 + 建新卡（clarify 工具 ended 后触发）。"""
+        loop = self._get_loop()
+        if loop is None:
+            return
+        future: ConcurrentFuture | None = None
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._do_clarify_split(session), loop,
+            )
+            # 预算 = 卡片创建等待 + seal/建卡余量
+            future.result(timeout=_CARD_CREATION_WAIT_SEC * 2 + 30)
+        except Exception:
+            _logger.warning(
+                "clarify_split failed or timed out, msg=%s",
+                session.message_id[:12],
+                exc_info=True,
+            )
+            # 取消仍在运行的切卡协程，避免与后续 flush 重叠。
+            if future is not None and not future.done():
+                future.cancel()
 
     def on_answer(self, *, message_id: str, text: str) -> bool:
         """答案文本增量（流式）."""
@@ -350,6 +385,37 @@ class StreamCardController(StreamingController):
         for key, val in list(self._interrupt_map.items()):
             if val == old_message_id:
                 self._interrupt_map[key] = new_message_id
+
+    def on_clarify_enter(
+        self,
+        *,
+        message_id: str,
+        chat_id: str | None = None,
+        session_key: str | None = None,
+    ) -> None:
+        """clarify 进入：仅暂停 flush，等 tool.completed 再封卡（避免工具状态卡在 running）。"""
+        if not self.enabled:
+            return
+        session = self._get_active_session(message_id)
+        if session is None or session.state != SessionState.STREAMING:
+            return
+        session.state = SessionState.CLARIFY_PAUSED  # 暂停 flush，保留当前卡
+
+    def on_clarify_exit(
+        self,
+        *,
+        message_id: str,
+        chat_id: str | None = None,
+        session_key: str | None = None,
+    ) -> None:
+        """clarify 退出：标记待封卡，恢复 STREAMING，等 tool.completed 触发切卡。"""
+        if not self.enabled:
+            return
+        session = self._sessions.get(message_id)
+        if session is None or session.state != SessionState.CLARIFY_PAUSED:
+            return  # 已被 interrupt 接管 / enter 未生效
+        session.clarify_pending_split = True
+        session.state = SessionState.STREAMING  # 让 tool.completed 能更新卡片
 
     async def on_completed_wait(
         self,
