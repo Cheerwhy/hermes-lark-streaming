@@ -162,6 +162,12 @@ _STEP_RUNNING = {
     "error_block": None,
 }
 _STEP_SUCCESS = {**_STEP_RUNNING, "status": "success", "output": "ok", "elapsed_ms": 100}
+_STEP_TIMEOUT = {
+    **_STEP_RUNNING,
+    "status": "timeout",
+    "error": "Error executing tool 'read': timed out after 420.0s",
+    "elapsed_ms": 420_000,
+}
 
 
 class TestBuildToolPanel:
@@ -178,6 +184,14 @@ class TestBuildToolPanel:
         panel = _build_tool_panel([_STEP_RUNNING], elapsed_ms=3000)
         title = panel["header"]["title"]["content"]
         assert "3.0s" in title
+
+    def test_timeout_step_renders_orange_timeout_label(self) -> None:
+        panel = _build_tool_panel([_STEP_TIMEOUT])
+        title = panel["elements"][0]["text"]["content"]
+        assert "Timeout" in title
+        assert "<font color='orange'>Timeout</font>" in title
+        # 超时不渲染 Error 输出块
+        assert len(panel["elements"]) == 1
 
 
 # --- Footer ---

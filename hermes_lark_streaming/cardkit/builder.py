@@ -227,6 +227,7 @@ def _tool_status_info(status: str) -> dict[str, str]:
         "running": {"label": "Running", "color": "turquoise"},
         "success": {"label": "Succeeded", "color": "green"},
         "error": {"label": "Failed", "color": "red"},
+        "timeout": {"label": "Timeout", "color": "orange"},
     }.get(status, {"label": status.capitalize(), "color": "grey"})
 
 

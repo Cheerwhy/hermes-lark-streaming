@@ -209,6 +209,8 @@ def on_tool_updated(
     tool_name: str,
     status: str,
     detail: str = "",
+    is_error: bool = False,
+    result: str = "",
 ) -> bool:
     """[注入点 3] progress_callback — tool.updated."""
     return bool(
@@ -217,6 +219,8 @@ def on_tool_updated(
             tool_name=tool_name,
             status=status,
             detail=detail,
+            is_error=is_error,
+            result=result,
         )
     )
 

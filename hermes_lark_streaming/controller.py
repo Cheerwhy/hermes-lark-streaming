@@ -231,6 +231,8 @@ class StreamCardController(StreamingController):
         tool_name: str,
         status: str,
         detail: str = "",
+        is_error: bool = False,
+        result: str = "",
     ) -> bool:
         """工具调用事件."""
         if not self.enabled:
@@ -244,11 +246,14 @@ class StreamCardController(StreamingController):
         if status in ("running", "started", "tool.started"):
             session.tool_use.record_start(tool_name, detail)
         else:
-            is_error = status in ("error", "failed")
+            is_err = status in ("error", "failed") or bool(is_error)
+            # 网关 progress_callback 的 completed 事件把真实结果放在 kwargs
+            # （result/is_error），preview 恒为空——超时/报错时用结果文本兜底。
+            text = (result or detail).strip()
             session.tool_use.record_end(
                 tool_name,
-                error=detail if is_error else "",
-                output="" if is_error else detail,
+                error=text if is_err else "",
+                output="" if is_err else detail,
             )
             # clarify 工具 ended 且有待封卡标志 → 封旧卡 + 建新卡
             if session.clarify_pending_split:

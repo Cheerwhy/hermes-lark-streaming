@@ -11,6 +11,7 @@ from hermes_lark_streaming.streaming.tooluse import (
     ToolUseTracker,
     _basename_only,
     _build_display_block,
+    _extract_error_message,
     _fenced_block,
     _format_duration_label,
     _humanize_tool_name,
@@ -242,6 +243,30 @@ class TestFencedBlock:
         assert result["fenced"].startswith("````")
 
 
+class TestExtractErrorMessage:
+    def test_plain_text_passthrough(self) -> None:
+        assert _extract_error_message("command failed") == "command failed"
+
+    def test_empty_passthrough(self) -> None:
+        assert _extract_error_message("") == ""
+
+    def test_json_error_field_preferred(self) -> None:
+        text = '{"error": "boom", "output": "details", "exit_code": 1}'
+        assert _extract_error_message(text) == "boom"
+
+    def test_json_falls_back_to_output(self) -> None:
+        text = '{"output": "bash: foo: command not found", "exit_code": 127, "error": null}'
+        assert _extract_error_message(text) == "bash: foo: command not found"
+
+    def test_json_only_exit_code(self) -> None:
+        text = '{"exit_code": 2}'
+        assert _extract_error_message(text) == "exit code 2"
+
+    def test_invalid_json_passthrough(self) -> None:
+        text = "not { json"
+        assert _extract_error_message(text) == text
+
+
 class TestToolUseTracker:
     def test_empty_tracker(self) -> None:
         tracker = ToolUseTracker()
@@ -271,6 +296,31 @@ class TestToolUseTracker:
         steps = tracker.build_display_steps()
         assert steps[0]["status"] == "error"
         assert steps[0]["error"] == "command failed"
+
+    def test_record_end_with_timeout_text(self) -> None:
+        tracker = ToolUseTracker()
+        tracker.record_start("exec", "slow command")
+        tracker.record_end("exec", error="Error executing tool 'exec': timed out after 420.0s")
+        steps = tracker.build_display_steps()
+        assert steps[0]["status"] == "timeout"
+        assert "timed out" in steps[0]["error"]
+        # 超时只显示标签，不附带 Error 块
+        assert steps[0]["error_block"] is None
+
+    def test_record_end_timeout_variant_without_d(self) -> None:
+        tracker = ToolUseTracker()
+        tracker.record_start("exec", "slow command")
+        tracker.record_end("exec", error="Tool timeout after 60s")
+        steps = tracker.build_display_steps()
+        assert steps[0]["status"] == "timeout"
+
+    def test_record_end_timeout_without_prior_start(self) -> None:
+        tracker = ToolUseTracker()
+        tracker.record_start("read", "f")
+        tracker.record_end("exec", error="Error executing tool 'exec': timed out after 420.0s")
+        steps = tracker.build_display_steps()
+        assert len(steps) == 2
+        assert steps[1]["status"] == "timeout"
 
     def test_record_end_without_start_skipped(self) -> None:
         # 无 session 存在，record_end 直接返回

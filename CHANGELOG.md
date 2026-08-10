@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 变更
+
+- 工具调用超时时,状态标签现在显示为橙色 Timeout(此前网关未透传 is_error/result,超时被误显示为绿色 Succeeded),且不附带原始结果 JSON 块;普通工具报错显示为红色 Failed,并展示从 JSON 结果中提取的可读错误信息。
+
+### Changed
+
+- Tool calls that time out now show an orange Timeout label (previously the gateway did not forward `is_error`/`result`, so timeouts were mislabeled as green Succeeded), without attaching the raw result JSON block; ordinary tool errors render as red Failed with a readable message extracted from the JSON result.
+
+---
+
 ## [0.12.0] - 2026-07-31
 
 ### 新增

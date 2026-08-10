@@ -168,7 +168,7 @@ def _build_tool_hook_runner(*, use_turn_context: bool):
             "class Callbacks:\n"
             "    def __init__(self, ctx):\n"
             "        self._ctx = ctx\n"
-            "    def callback(self, event_type, tool_name=None, preview=None):\n"
+            "    def callback(self, event_type, tool_name=None, preview=None, args=None, **kwargs):\n"
             f"{_tool_hook('        ')}"
             "        ctx = self._ctx\n"
             "        return 'native'\n"
@@ -178,7 +178,7 @@ def _build_tool_hook_runner(*, use_turn_context: bool):
 
     source = (
         "def callback(event_type, event_message_id, _run_still_current, "
-        "tool_name=None, preview=None):\n"
+        "tool_name=None, preview=None, args=None, **kwargs):\n"
         f"{_tool_hook('    ')}"
         "    return 'native'\n"
     )
@@ -369,6 +369,37 @@ class TestGeneratedToolHook:
             tool_name="search",
             status="started",
             detail="query",
+            is_error=False,
+            result="",
+        )
+
+    def test_completed_tool_forwards_is_error_and_result(self) -> None:
+        ctx = MagicMock()
+        ctx.event_message_id = "modern-message"
+        ctx._run_still_current.return_value = True
+        ctx.log_queue = None
+        callback = _build_tool_hook_runner(use_turn_context=True)(ctx)
+
+        with patch(
+            "hermes_lark_streaming.patch.on_tool_updated",
+            return_value=True,
+        ) as on_tool_updated:
+            result = callback(
+                "tool.completed",
+                tool_name="exec",
+                preview=None,
+                is_error=True,
+                result="Error executing tool 'exec': timed out after 420.0s",
+            )
+
+        assert result is None
+        on_tool_updated.assert_called_once_with(
+            message_id="modern-message",
+            tool_name="exec",
+            status="completed",
+            detail="",
+            is_error=True,
+            result="Error executing tool 'exec': timed out after 420.0s",
         )
 
     def test_consumed_tool_event_preserves_log_mode(self) -> None:
@@ -407,6 +438,8 @@ class TestGeneratedToolHook:
             tool_name="search",
             status="completed",
             detail="done",
+            is_error=False,
+            result="",
         )
 
     def test_exception_is_logged_before_native_fallback(self, caplog: pytest.LogCaptureFixture) -> None:

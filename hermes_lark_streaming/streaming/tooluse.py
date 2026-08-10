@@ -15,6 +15,7 @@ class ToolStatus(StrEnum):
     RUNNING = "running"
     SUCCESS = "success"
     ERROR = "error"
+    TIMEOUT = "timeout"
 
 
 class ToolBlock(TypedDict):
@@ -237,6 +238,42 @@ def _fenced_block(language: str, content: str) -> ToolBlock:
     return {"language": language, "content": content, "fenced": f"{fence}{language}\n{content}\n{fence}"}
 
 
+_TIMEOUT_TEXT_RE = re.compile(r"timed?\s*out", re.IGNORECASE)
+
+
+def _is_timeout_text(text: str) -> bool:
+    """判断工具结束文本是否为超时（Hermes 核心超时消息含 "timed out after"）。"""
+    return bool(_TIMEOUT_TEXT_RE.search(text or ""))
+
+
+def _resolve_end_status(error: str, output: str = "") -> ToolStatus:
+    """error → TIMEOUT（超时文本）/ ERROR；无 error → SUCCESS。"""
+    if not error:
+        return ToolStatus.SUCCESS
+    return ToolStatus.TIMEOUT if _is_timeout_text(error or output) else ToolStatus.ERROR
+
+
+def _extract_error_message(error: str) -> str:
+    """从 JSON 包装的错误结果中提取可读信息（error/message/output 字段），避免整段 JSON 上卡片。"""
+    if not error:
+        return error
+    try:
+        data = json.loads(error)
+    except (TypeError, ValueError):
+        return error
+    if isinstance(data, dict):
+        for key in ("error", "message"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        output = data.get("output")
+        if isinstance(output, str) and output.strip():
+            return output.strip()
+        if data.get("exit_code") is not None:
+            return f"exit code {data['exit_code']}"
+    return error
+
+
 class ToolUseTracker:
     """追踪当前消息中的工具调用步骤.
 
@@ -273,27 +310,37 @@ class ToolUseTracker:
             return
         desc = _resolve_tool_descriptor(name)
         sanitizer = desc.get("sanitizer") if desc else None
+        status = _resolve_end_status(error, output)
+        # 超时只显示标签，不附带 Error 块；普通报错显示提取后的可读信息。
+        error_block = (
+            _build_display_block(_extract_error_message(error), "text", sanitizer=sanitizer)
+            if status is ToolStatus.ERROR and error
+            else None
+        )
+        result_block = (
+            _build_display_block(output, "json", sanitizer=sanitizer)
+            if status is ToolStatus.SUCCESS and output
+            else None
+        )
         for step in reversed(self._session.steps):
             if step.name == name and step.status == ToolStatus.RUNNING:
-                step.status = ToolStatus.ERROR if error else ToolStatus.SUCCESS
+                step.status = status
                 step.error = error
                 step.output = output
                 step.elapsed_ms = (time.time() - step.started_at) * 1000
-                if error:
-                    step.error_block = _build_display_block(error, "text", sanitizer=sanitizer)
-                elif output:
-                    step.result_block = _build_display_block(output, "json", sanitizer=sanitizer)
+                step.error_block = error_block
+                step.result_block = result_block
                 return
         self._session.steps.append(
             ToolStep(
                 name=name,
-                status=ToolStatus.ERROR if error else ToolStatus.SUCCESS,
+                status=status,
                 detail=error or output,
                 output=output,
                 error=error,
                 started_at=time.time(),
-                error_block=_build_display_block(error, "text", sanitizer=sanitizer) if error else None,
-                result_block=_build_display_block(output, "json", sanitizer=sanitizer) if output else None,
+                error_block=error_block,
+                result_block=result_block,
             )
         )
 

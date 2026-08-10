@@ -661,6 +661,65 @@ def test_clarify_pending_requires_exact_tool_name() -> None:
     assert session.card_id == "old_card"
 
 
+def test_tool_completed_timeout_recorded_as_timeout() -> None:
+    """completed + is_error + 'timed out' 结果 → 工具步骤标记为 timeout。"""
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_tool")
+    session.state = SessionState.STREAMING
+    session.card_id = "old_card"
+    ctrl._sessions["msg_tool"] = session
+
+    ctrl.on_tool_update(
+        message_id="msg_tool",
+        tool_name="web_fetch",
+        status="started",
+        detail="https://example.com",
+    )
+    ctrl.on_tool_update(
+        message_id="msg_tool",
+        tool_name="web_fetch",
+        status="completed",
+        detail="",
+        is_error=True,
+        result="Error executing tool 'web_fetch': timed out after 420.0s",
+    )
+
+    steps = session.tool_use.build_display_steps()
+    assert len(steps) == 1
+    assert steps[0]["status"] == "timeout"
+    assert "timed out" in steps[0]["error"]
+    # 超时只显示标签，不附带 Error 块
+    assert steps[0]["error_block"] is None
+
+
+def test_tool_completed_plain_error_recorded_as_error() -> None:
+    """completed + is_error + 普通错误文本 → 工具步骤标记为 error（非 timeout）。"""
+    ctrl = _setup_ctrl()
+    session = _make_session("msg_tool")
+    session.state = SessionState.STREAMING
+    session.card_id = "old_card"
+    ctrl._sessions["msg_tool"] = session
+
+    ctrl.on_tool_update(
+        message_id="msg_tool",
+        tool_name="exec",
+        status="started",
+        detail="bad-command",
+    )
+    ctrl.on_tool_update(
+        message_id="msg_tool",
+        tool_name="exec",
+        status="completed",
+        detail="",
+        is_error=True,
+        result="Error executing tool 'exec': command not found",
+    )
+
+    steps = session.tool_use.build_display_steps()
+    assert len(steps) == 1
+    assert steps[0]["status"] == "error"
+
+
 # ── 辅助函数 ──
 
 
