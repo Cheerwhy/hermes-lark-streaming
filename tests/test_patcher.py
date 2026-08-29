@@ -23,6 +23,7 @@ from hermes_lark_streaming.patcher import (
     Patcher,
     PatcherError,
     _cron_deliver_hook,
+    _find_answer_delta_site,
     _remove_block,
 )
 
@@ -226,6 +227,35 @@ class TestApplyRemove:
         content = run_copy.read_text(encoding="utf-8")
         ast.parse(content)  # should not raise
 
+    def test_find_answer_delta_site_uses_primary_stream_consumer_callback(self) -> None:
+        lines = textwrap.dedent("""\
+            if _want_stream_deltas:
+                def _stream_delta_cb(text: str) -> None:
+                    if ctx._run_still_current():
+                        _stream_consumer.on_delta(text)
+                        if _stts_consumer_ref is not None:
+                            _stts_consumer_ref.on_delta(text)
+            if _stream_delta_cb is None and _stts_consumer_ref is not None:
+                def _stream_delta_cb(text: str) -> None:
+                    if ctx._run_still_current():
+                        _stts_consumer_ref.on_delta(text)
+        """).splitlines(keepends=True)
+
+        loc = _find_answer_delta_site(lines)
+
+        assert loc is not None
+        assert "_stream_consumer.on_delta" in lines[loc[0] + 1]
+
+    def test_apply_injects_answer_hook_into_primary_stream_consumer_callback(self, run_copy: Path) -> None:
+        patcher = _patcher(run_copy)
+        patcher.apply()
+        lines = run_copy.read_text(encoding="utf-8").splitlines()
+        hook_idx = next(i for i, line in enumerate(lines) if "# HERMES_LARK_ANSWER_BEGIN" in line)
+        window = "\n".join(lines[max(0, hook_idx - 8): hook_idx + 16])
+
+        assert "_stream_consumer.on_delta(text)" in window
+        assert "if _stream_delta_cb is None and _stts_consumer_ref is not None" not in window
+
     def test_apply_uses_current_turn_message_id_for_card_session(self, run_copy: Path) -> None:
         patcher = _patcher(run_copy)
         patcher.apply()
@@ -236,7 +266,7 @@ class TestApplyRemove:
         assert "on_feishu_normalize(" in content
         assert "on_message_started(" in content
         assert "_lark_anchor_id = self._reply_anchor_for_event(event)" in content
-        assert "message_id=event.message_id" in content
+        assert "message_id=event.message_id or _lark_anchor_id" in content
         assert "anchor_id=_lark_anchor_id" in content
         assert "_lark_next_message_id = getattr(pending_event, 'message_id', None) or next_message_id" in content
         assert "new_message_id=_lark_next_message_id" in content
@@ -252,9 +282,12 @@ class TestApplyRemove:
         assert "agent_result.pop('already_sent', None)" in content
         assert "_lark_completion_id = agent_result.get('_hermes_lark_completion_id') or event.message_id" in content
         assert "message_id=_lark_completion_id" in content
-        assert "on_answer_delta(message_id=event_message_id" in content
-        assert "on_thinking_delta(message_id=event_message_id" in content
-        assert "on_reasoning_delta(message_id=event_message_id" in content
+        assert "ctx = self._ctx" in content
+        assert "message_id=ctx.event_message_id or ''" in content
+        assert "on_answer_delta(message_id=ctx.event_message_id or ''" in content
+        assert "on_thinking_delta(message_id=ctx.event_message_id or ''" in content
+        assert "on_reasoning_delta(message_id=ctx.event_message_id or ''" in content
+        assert "Hermes Lark tool hook failed" in content
         assert "on_background_deliver(" in content
         assert "_bg_preview = prompt[:60] + ('...' if len(prompt) > 60 else '')" in content
         assert "content=text_content" in content

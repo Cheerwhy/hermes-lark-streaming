@@ -234,7 +234,7 @@ def _start_hook(indent: str) -> str:
             "    from hermes_lark_streaming.patch import on_message_started",
             "    _lark_anchor_id = self._reply_anchor_for_event(event)",
             "    on_message_started(",
-            "        message_id=event.message_id,",
+            "        message_id=event.message_id or _lark_anchor_id,",
             "        chat_id=source.chat_id,",
             "        anchor_id=_lark_anchor_id,",
             "    )",
@@ -318,18 +318,19 @@ def _tool_hook(indent: str) -> str:
         MK_TOOL,
         MK_TOOL_END,
         [
+            "ctx = self._ctx",
             "try:",
             "    from hermes_lark_streaming.patch import on_tool_updated",
-            "    if _run_still_current() and event_type in ('tool.started', 'tool.completed'):",
+            "    if ctx._run_still_current() and event_type in ('tool.started', 'tool.completed'):",
             "        if on_tool_updated(",
-            "            message_id=event_message_id,",
+            "            message_id=ctx.event_message_id or '',",
             "            tool_name=tool_name or '',",
             "            status='started' if event_type == 'tool.started' else 'completed',",
             "            detail=preview or '',",
             "        ):",
             "            return",
-            "except Exception:",
-            "    pass",
+            "except Exception as _lark_tool_exc:",
+            "    logger.warning('Hermes Lark tool hook failed: %s', _lark_tool_exc, exc_info=True)",
         ],
     )
 
@@ -342,7 +343,7 @@ def _answer_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_lark_streaming.patch import on_answer_delta",
-            "    if text and _run_still_current() and on_answer_delta(message_id=event_message_id, text=text):",
+            "    if text and ctx._run_still_current() and on_answer_delta(message_id=ctx.event_message_id or '', text=text):",
             "        return",
             "except Exception:",
             "    pass",
@@ -358,8 +359,8 @@ def _thinking_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_lark_streaming.patch import on_thinking_delta",
-            "    if (text and not already_streamed and _run_still_current()",
-            "            and on_thinking_delta(message_id=event_message_id, text=text)):",
+            "    if (text and not already_streamed and ctx._run_still_current()",
+            "            and on_thinking_delta(message_id=ctx.event_message_id or '', text=text)):",
             "        return",
             "except Exception:",
             "    pass",
@@ -374,10 +375,10 @@ def _reasoning_hook(indent: str) -> str:
         MK_REASONING_END,
         [
             "def _reasoning_cb(text):",
-            "    if text and _run_still_current():",
+            "    if text and ctx._run_still_current():",
             "        try:",
             "            from hermes_lark_streaming.patch import on_reasoning_delta",
-            "            on_reasoning_delta(message_id=event_message_id, text=text)",
+            "            on_reasoning_delta(message_id=ctx.event_message_id or '', text=text)",
             "        except Exception:",
             "            pass",
             "agent.reasoning_callback = _reasoning_cb",
@@ -396,7 +397,7 @@ def _background_review_hook(indent: str) -> str:
             "    _lark_bg_review_sender = agent.background_review_callback",
             "    def _lark_bg_review_callback(message):",
             "        _lark_bg_review_deferred = on_background_review_message(",
-            "            message_id=event_message_id,",
+            "            message_id=ctx.event_message_id or '',",
             "            text=message,",
             "            sender=_lark_bg_review_sender,",
             "        )",
@@ -670,7 +671,7 @@ class Patcher:
             ("abort", "abort", _find_handler_abort(tree, lines)),
             ("interrupt", "interrupt", _find_interrupt_site(tree, lines)),
             ("tool", "tool", _find_func_body(tree, lines, "progress_callback")),
-            ("answer", "answer", _find_func_body(tree, lines, "_stream_delta_cb")),
+            ("answer", "answer", _find_answer_delta_site(lines)),
             ("thinking", "thinking", _find_func_body(tree, lines, "_interim_assistant_cb")),
             ("reasoning", "reasoning", _find_reasoning_site(tree, lines)),
             ("background_review", "background_review", _find_background_review_site(tree, lines)),
@@ -725,6 +726,29 @@ def _find_func_body(tree: ast.Module, lines: list[str], name: str) -> tuple[int,
                 lineno = body[start].lineno - 1
                 indent = _safe_indent(lines, lineno)
                 return lineno, indent
+    return None
+
+
+def _find_answer_delta_site(lines: list[str]) -> tuple[int, str] | None:
+    """Find the real text streaming callback, not the TTS-only fallback.
+
+    Hermes 0.20.x has two nested functions named ``_stream_delta_cb``:
+    the primary text stream callback calls ``_stream_consumer.on_delta``;
+    the later TTS fallback only exists when no text stream consumer was
+    created. Injecting the Lark answer hook into the fallback leaves the
+    primary consumer active, so Feishu receives both the native streamed
+    final and the CardKit finalization.
+    """
+    for i, line in enumerate(lines):
+        if "_stream_consumer.on_delta(text)" not in line:
+            continue
+        for j in range(i - 1, max(i - 20, -1), -1):
+            if "def _stream_delta_cb" in lines[j]:
+                for k in range(j + 1, i + 1):
+                    stripped = lines[k].lstrip()
+                    if "run_still_current()" in stripped and stripped.startswith("if "):
+                        return k, _safe_indent(lines, k)
+                return j + 1, _safe_indent(lines, j + 1)
     return None
 
 
