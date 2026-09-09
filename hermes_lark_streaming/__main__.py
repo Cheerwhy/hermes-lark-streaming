@@ -164,13 +164,17 @@ def _cmd_status() -> int:
     print(f"Target:  {patcher.run_path}")
 
     if patched:
-        from .patcher import Patcher as _PatcherCls
+        from .patcher import Patcher as _PatcherCls, _HOOK_MARKERS
 
-        content = patcher.run_path.read_text(encoding="utf-8")
-        for begin, _end in _PatcherCls.MARKERS:
-            found = begin in content
-            label = begin.replace("# HERMES_LARK_", "").replace("_BEGIN", "").lower()
-            print(f"  {label}: {'installed' if found else 'missing'}")
+        print(f"Fully patched: {'yes' if patcher.is_fully_patched() else 'no'}")
+        for stem, path in patcher.module_paths.items():
+            content = path.read_text(encoding="utf-8")
+            hooks = []
+            from .patcher import _FILE_HOOKS
+            for hook in _FILE_HOOKS[stem]:
+                begin, _end = _HOOK_MARKERS[hook]
+                hooks.append(f"{hook}:{'ok' if begin in content else 'MISSING'}")
+            print(f"  {path.name}: {', '.join(hooks)}")
 
     cron_patcher = _get_cron_patcher()
     if cron_patcher is not None:

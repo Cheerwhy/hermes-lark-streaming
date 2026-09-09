@@ -16,7 +16,7 @@ from hermes_lark_streaming.patcher import (
     PatcherError,
     _code_roots,
     _default_cron_path,
-    _default_run_path,
+    _default_module_paths,
     _python_from_hermes_cli,
     _resolve_module_path,
     hermes_install_dir,
@@ -83,24 +83,28 @@ def test_resolve_falls_back_to_first_root_when_missing(
     assert _resolve_module_path("gateway.run", [root]) == (root / "gateway" / "run.py")
 
 
-@pytest.mark.parametrize(
-    ("default_path", "rel"),
-    [(_default_run_path, "gateway/run.py"), (_default_cron_path, "cron/scheduler.py")],
-)
-def test_default_path_respects_hermes_home(
-    default_path: object, rel: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_default_paths_respect_hermes_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """默认路径用当前 HERMES_HOME 计算，不冻结于 import 时。"""
-    target = tmp_path / "hermes-agent" / rel
-    target.parent.mkdir(parents=True)
-    target.write_text("# stub\n")
+    for stem in ("run_inbound", "run_turn", "run_turn_runner", "run_busy"):
+        rel = f"gateway/{stem}.py"
+        target = tmp_path / "hermes-agent" / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# stub\n")
+    cron_target = tmp_path / "hermes-agent" / "cron" / "scheduler_delivery.py"
+    cron_target.parent.mkdir(parents=True, exist_ok=True)
+    cron_target.write_text("# stub\n")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    assert default_path() == target.resolve()  # type: ignore[operator]
+    paths = _default_module_paths()
+    for stem in ("run_inbound", "run_turn", "run_turn_runner", "run_busy"):
+        assert paths[stem] == (tmp_path / "hermes-agent" / f"gateway/{stem}.py").resolve()
+    assert _default_cron_path() == cron_target.resolve()
 
 
 @pytest.mark.parametrize(
     ("cls", "label"),
-    [(Patcher, "gateway/run.py"), (CronPatcher, "scheduler.py")],
+    [(Patcher, "gateway modules not found"), (CronPatcher, "scheduler_delivery.py")],
 )
 def test_not_found_diagnostic_lists_tried_roots(
     cls: type, label: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -118,11 +122,16 @@ def test_not_found_diagnostic_lists_tried_roots(
     assert "HERMES_HOME" in msg
 
 
-def test_explicit_path_bypasses_discovery(tmp_path: Path) -> None:
-    """显式传 path 时不走发现逻辑，直接用传入值。"""
-    run_py = tmp_path / "run.py"
-    run_py.write_text("# stub\n")
-    assert Patcher(run_path=run_py).run_path == run_py
+def test_explicit_paths_bypass_discovery(tmp_path: Path) -> None:
+    """显式传 module_paths 时不走发现逻辑，直接用传入值。"""
+    paths = {}
+    for stem in ("run_inbound", "run_turn", "run_turn_runner", "run_busy"):
+        p = tmp_path / f"{stem}.py"
+        p.write_text("# stub\n")
+        paths[stem] = p
+    patcher = Patcher(module_paths=paths)
+    assert patcher.module_paths == paths
+    assert patcher.run_path == paths["run_turn"]
 
 
 def test_hermes_python_found_via_code_roots(
