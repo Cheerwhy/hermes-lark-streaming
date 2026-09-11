@@ -651,8 +651,10 @@ def _clarify_hook(indent: str) -> str:
         MK_CLARIFY_END,
         [
             "try:",
+            "    import functools",
             "    from hermes_lark_streaming.patch import on_clarify_enter, on_clarify_exit",
             "    _lark_clarify_orig = agent.clarify_callback",
+            "    @functools.wraps(_lark_clarify_orig)",
             "    def _lark_clarify_wrapper(*args, **kwargs):",
             "        try:",
             "            _lark_clarify_msg_id = ctx.event_message_id",
