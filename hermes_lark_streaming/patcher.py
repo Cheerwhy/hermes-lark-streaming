@@ -227,7 +227,11 @@ _FILE_ANCHORS: dict[str, tuple[tuple[str, tuple[str, ...], str], ...]] = {
             (),
             "queued follow-up boundary",
         ),
-        ("return _preserve_queued_followup_history_offset(result, followup_result)", (), "queued follow-up return"),
+        (
+            "merged = _preserve_queued_followup_history_offset(result, followup_result)",
+            ("return _preserve_queued_followup_history_offset(result, followup_result)",),
+            "queued follow-up return",
+        ),
         ("self._hmwa_discard_stale_result(source, _quick_key, run_generation)", (), "abort site"),
         ("# Restart the typing indicator", (), "interrupt site"),
         ("images, text_content = adapter.extract_images(response)", (), "background deliver"),
@@ -839,7 +843,20 @@ def _find_followup_complete_site(tree: ast.Module, lines: list[str]) -> tuple[in
 
 
 def _find_followup_result_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
-    return _site_before(lines, "return _preserve_queued_followup_history_offset(")
+    """Site before the queued-follow-up merge, whichever shape Hermes uses.
+
+    The hook must run BEFORE the merge so its ``_hermes_lark_completion_id``
+    lands in the merged dict (>=2026.9.11 assigns ``merged = ...`` and returns it
+    later; older versions returned the call result directly).
+    """
+    for needle in (
+        "merged = _preserve_queued_followup_history_offset(",
+        "return _preserve_queued_followup_history_offset(",
+    ):
+        site = _site_before(lines, needle)
+        if site is not None:
+            return site
+    return None
 
 
 def _find_abort_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
