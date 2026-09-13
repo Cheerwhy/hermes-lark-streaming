@@ -164,7 +164,7 @@ def _cmd_status() -> int:
     print(f"Target:  {patcher.run_path}")
 
     if patched:
-        from .patcher import Patcher as _PatcherCls, _HOOK_MARKERS
+        from .patcher import _HOOK_MARKERS
 
         print(f"Fully patched: {'yes' if patcher.is_fully_patched() else 'no'}")
         for stem, path in patcher.module_paths.items():

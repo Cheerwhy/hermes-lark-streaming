@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from .config import hermes_home
@@ -195,7 +196,7 @@ def _default_cron_path() -> Path:
     return _resolve_module_path("cron.scheduler_delivery", _code_roots())
 
 
-_HOOK_MARKERS: dict[str, tuple[str, str]] = {n.lower(): m for n, m in zip(_HOOK_NAMES, MARKERS)}
+_HOOK_MARKERS: dict[str, tuple[str, str]] = {n.lower(): m for n, m in zip(_HOOK_NAMES, MARKERS, strict=True)}
 
 MK_CRON_DELIVER = f"# {PREFIX}_CRON_DELIVER_BEGIN"
 MK_CRON_DELIVER_END = f"# {PREFIX}_CRON_DELIVER_END"
@@ -238,8 +239,16 @@ _FILE_ANCHORS: dict[str, tuple[tuple[str, tuple[str, ...], str], ...]] = {
         ('self.hooks.emit("agent:end"', (), "agent:end"),
     ),
     "run_turn_runner": (
-        ("agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier", (), "reasoning_config"),
-        ("agent.background_review_callback, bg_release = self._make_bg_review_callbacks()", (), "background_review_callback"),
+        (
+            "agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier",
+            (),
+            "reasoning_config",
+        ),
+        (
+            "agent.background_review_callback, bg_release = self._make_bg_review_callbacks()",
+            (),
+            "background_review_callback",
+        ),
         ("agent.clarify_callback = self._clarify_callback_sync", (), "clarify_callback"),
     ),
     "run_busy": (),
@@ -411,7 +420,8 @@ def _tool_hook(indent: str) -> str:
             "            detail=preview or \'\',",
             "        ):",
             "            _lark_log_queue = getattr(_lark_ctx, \'log_queue\', None)",
-            "            if _lark_log_queue is not None and event_type == \'tool.started\' and tool_name != \'_thinking\':",
+            "            if _lark_log_queue is not None and event_type == \'tool.started\'"
+            " and tool_name != \'_thinking\':",
             "                from datetime import datetime as _lark_datetime",
             "                _lark_timestamp = _lark_datetime.now().strftime(\'%Y-%m-%d %H:%M:%S\')",
             "                _lark_preview = f\' \"{preview}\"\' if preview else \'\'",
@@ -795,7 +805,7 @@ def _site_before(lines: list[str], needle: str) -> tuple[int, str] | None:
     return idx, _safe_indent(lines, idx)
 
 
-def _site_body(name: str):
+def _site_body(name: str) -> Callable[[ast.Module, list[str]], tuple[int, str] | None]:
     def _find(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
         return _find_func_body(tree, lines, name)
     return _find
@@ -818,7 +828,7 @@ def _find_stop_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | Non
             and keyword.value.value == "stop_command"
             for keyword in call.keywords
         )
-        if is_stop:
+        if is_stop and node.end_lineno is not None:
             return node.end_lineno, _safe_indent(lines, node.lineno - 1)
     return None
 

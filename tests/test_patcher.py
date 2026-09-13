@@ -5,13 +5,11 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import shutil
-import textwrap
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -25,12 +23,12 @@ from hermes_lark_streaming.patcher import (
     _answer_hook,
     _complete_hook,
     _cron_deliver_hook,
+    _default_cron_path,
+    _default_module_paths,
     _followup_complete_hook,
     _remove_block,
     _stop_hook,
     _tool_hook,
-    _default_module_paths,
-    _default_cron_path,
 )
 
 _STEMS = ("run_inbound", "run_turn", "run_turn_runner", "run_busy")
@@ -302,7 +300,7 @@ class TestHookBodies:
         ctx = SimpleNamespace(event_message_id="om_9", _run_still_current=lambda: True)
         callback = _build_answer_hook_runner()
         with (
-            caplog.at_level(logging := __import__("logging").ERROR, logger="hermes_lark_streaming"),
+            caplog.at_level(__import__("logging").ERROR, logger="hermes_lark_streaming"),
             patch(
                 "hermes_lark_streaming.patch.on_answer_delta",
                 side_effect=RuntimeError("answer hook exploded"),
@@ -332,7 +330,7 @@ class TestApplyRemove:
     def test_apply_produces_valid_python(self, run_copy: dict) -> None:
         patcher = _patcher(run_copy)
         patcher.apply()
-        for stem, path in run_copy.items():
+        for path in run_copy.values():
             compile(path.read_text(encoding="utf-8"), str(path), "exec")
 
     def test_apply_uses_current_turn_message_id_for_card_session(self, run_copy: dict) -> None:
