@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 修复
+
+- 修复流式卡片路径下 `MEDIA:` 附件不投递：网关只从 `final_response` 扫描 MEDIA 指令再上传文件（`gateway/run_turn.py` 的 `if already_sent and not failed: if response and adapter:`），而本插件在队列 follow-up 收尾时会清空 `final_response`（失败分支下网关侧注入代码同样清空），模型只走流式 delta、`final_response` 为空时也一样 —— 这三种情况下卡片正文正常但附件被静默丢弃。现在插件会从流式文本重新解析 `MEDIA:` 指令并直接上传投递；同一标签若网关自己会投递则不重复发送。卡片正文也不再显示 `MEDIA:<path>` 指令（与 Hermes 的显示口径一致）。
+
+### Fixed
+
+- Deliver `MEDIA:` attachments on the streaming-card path. Hermes only scans `final_response` for MEDIA directives (`gateway/run_turn.py`: `if already_sent and not failed: if response and adapter:`), but this plugin blanks `final_response` when finalizing a queued follow-up (and the gateway's own failure branch blanks it too) — and a model that only streams deltas leaves it empty as well. In all three cases the card rendered fine while the attachment was dropped silently. The plugin now re-parses `MEDIA:` directives from the streamed text and uploads them itself, skipping any tag the gateway will deliver, so nothing is sent twice. `MEDIA:<path>` directives are also stripped from the card body, matching Hermes' display behaviour.
+
 ## [0.12.0] - 2026-07-31
 
 ### 新增

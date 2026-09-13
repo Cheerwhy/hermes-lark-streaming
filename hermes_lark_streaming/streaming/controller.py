@@ -22,6 +22,7 @@ from ..feishu import (
 from .diagnostics import compact_ids, extract_missing_element_id, segment_state_for_log, summarize_actions
 from .flush import CARDKIT_MS
 from .image import ImageResolver
+from .media import strip_media_directives
 from .segment_helper import (
     ELEMENT_THRESHOLD,
     FOOTER_RESERVE,
@@ -61,6 +62,13 @@ async def _resolve_answer_images(
             seg.text = await resolver.resolve_await(seg.text)
         except Exception:
             _logger.debug("%s image resolve failed: el=%s", log_prefix, seg.el_id, exc_info=True)
+
+
+def _strip_answer_media_directives(segments: list[Segment]) -> None:
+    """卡片正文里去掉 ``MEDIA:`` 指令 — 附件由 media 模块/网关投递，正文不该出现路径."""
+    for seg in segments:
+        if seg.type == SegmentType.ANSWER and seg.text:
+            seg.text = strip_media_directives(seg.text)
 
 
 class StreamingController:
@@ -325,7 +333,7 @@ class StreamingController:
                     )
                     seg.dirty = False
                 elif seg.type == SegmentType.ANSWER:
-                    content = seg.text
+                    content = strip_media_directives(seg.text)
                     if session.image_resolver:
                         content = session.image_resolver.resolve_images(content)
                     content = _downgrade_tables(optimize_markdown_style(content)) or " "
@@ -520,6 +528,7 @@ class StreamingController:
         old_card_id = card_id or session.card_id
         if not old_card_id:
             return
+        _strip_answer_media_directives(seal_segments)
         if session.image_resolver:
             await _resolve_answer_images(
                 seal_segments,
@@ -728,6 +737,7 @@ class StreamingController:
 
         active_segments = session.active_segments()
 
+        _strip_answer_media_directives(active_segments)
         if session.image_resolver:
             await _resolve_answer_images(
                 active_segments,

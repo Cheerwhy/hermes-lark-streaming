@@ -18,6 +18,10 @@ from .feishu import (
     FeishuClientConfig,
 )
 from .streaming.controller import StreamingController
+from .streaming.media import (
+    deliver_media_files,
+    media_paths_to_deliver,
+)
 from .streaming.segments import SegmentType
 from .streaming.session import CardSession, SessionState
 from .streaming.text import strip_reasoning_tags
@@ -300,6 +304,8 @@ class StreamCardController(StreamingController):
         if session.segment_state is None:
             return False
 
+        # 原始增量单独留档：``MEDIA:`` 指令要从这里扫描（卡片正文渲染时会去掉）。
+        session.record_raw_answer(text)
         answer_text = strip_reasoning_tags(text)
         if not answer_text:
             return False
@@ -427,8 +433,13 @@ class StreamCardController(StreamingController):
         model: str = "",
         tokens: dict | None = None,
         context: dict | None = None,
+        deliver_all_media: bool = False,
     ) -> bool:
-        """消息处理完成，并等待卡片真正收尾后返回是否已发送."""
+        """消息处理完成，并等待卡片真正收尾后返回是否已发送.
+
+        ``deliver_all_media`` — 调用方在返回后会清空 ``final_response``（队列 follow-up 收尾），
+        网关因此拿不到 MEDIA 指令，附件全部由本插件投递。
+        """
         if not self.enabled:
             return False
         session = self._completion_session(message_id)
@@ -478,7 +489,51 @@ class StreamCardController(StreamingController):
         if is_error:
             session.mark_failed()
 
-        return await self._complete_session_wait(session)
+        card_sent = await self._complete_session_wait(session)
+        if card_sent:
+            # 网关只在 final_response 非空时才投递 MEDIA 附件（run_turn.py 的
+            # ``if response and adapter``），而队列 follow-up 收尾与失败分支都会清空该字段：
+            # 这些情况下由插件补投，其余情况交给网关以免重复发送。
+            await self._deliver_missing_media(
+                session,
+                answer=answer,
+                gateway_delivers=not (deliver_all_media or is_error),
+            )
+        return card_sent
+
+    async def _deliver_missing_media(
+        self,
+        session: CardSession,
+        *,
+        answer: str,
+        gateway_delivers: bool,
+    ) -> int:
+        """补投网关看不到的 ``MEDIA:`` 附件（best-effort，绝不影响卡片投递结果）."""
+        try:
+            paths = media_paths_to_deliver(
+                streamed=session.raw_answer_text(),
+                gateway_text=answer,
+                gateway_delivers=gateway_delivers,
+            )
+            if not paths:
+                return 0
+            await self._ensure_init()
+            client = self._client
+            if client is None:
+                return 0
+            sent = await deliver_media_files(client, session.chat_id, paths)
+            _logger.info(
+                "media delivery: msg=%s files=%d sent=%d",
+                session.message_id[:12],
+                len(paths),
+                sent,
+            )
+            return sent
+        except Exception:
+            _logger.warning(
+                "media delivery failed: msg=%s", session.message_id[:12], exc_info=True,
+            )
+            return 0
 
     def on_cron_deliver(
         self,

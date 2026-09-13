@@ -57,6 +57,7 @@ class CardSession:
         "footer",
         "guard",
         "image_resolver",
+        "media_text",
         "message_id",
         "segment_state",
         "sequence",
@@ -103,6 +104,7 @@ class CardSession:
         self.split_disabled = False
         self.split_index: int = 0
         self.clarify_pending_split: bool = False
+        self.media_text: list[str] = []
 
     @property
     def has_card(self) -> bool:
@@ -119,3 +121,12 @@ class CardSession:
         if self.segment_state is None:
             return []
         return self.segment_state.segments[self.split_index:]
+
+    def record_raw_answer(self, text: str) -> None:
+        """记录未清洗的答案增量（含 ``MEDIA:`` 指令），供附件补投扫描."""
+        if text:
+            self.media_text.append(text)
+
+    def raw_answer_text(self) -> str:
+        """本轮答案的原始文本（保留 ``MEDIA:`` 指令）."""
+        return "".join(self.media_text)

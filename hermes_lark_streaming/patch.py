@@ -141,8 +141,12 @@ async def on_message_completed_wait(
     model: str = "",
     tokens: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
+    deliver_all_media: bool = False,
 ) -> bool:
-    """[注入点 2] return 前 — message.completed，等待卡片完成收尾."""
+    """[注入点 2] return 前 — message.completed，等待卡片完成收尾.
+
+    ``deliver_all_media`` — 调用方随后会清空 ``final_response`` 时置 True，让插件接管 MEDIA 附件.
+    """
     return bool(
         await ctrl.on_completed_wait(
             message_id=message_id,
@@ -152,6 +156,7 @@ async def on_message_completed_wait(
             model=model,
             tokens=tokens,
             context=context,
+            deliver_all_media=deliver_all_media,
         )
     )
 
@@ -183,6 +188,8 @@ async def on_queued_followup_boundary(*, ctrl: Any, message_id: str, result: dic
                 "used_tokens": result.get("last_prompt_tokens", 0),
                 "max_tokens": result.get("context_length", 0),
             },
+            # 下面会清空 final_response，网关将无从扫描 MEDIA 指令 → 附件交给插件投递。
+            deliver_all_media=True,
         )
     )
     if sent:
