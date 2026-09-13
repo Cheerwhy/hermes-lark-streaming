@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import tempfile
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -33,14 +35,43 @@ from hermes_lark_streaming.patcher import (
 
 _STEMS = ("run_inbound", "run_turn", "run_turn_runner", "run_busy")
 
+# CI 上没有 Hermes 安装（Tests workflow 只装本插件），回退到 GitHub main 的原始文件；
+# 本机有安装时始终用活文件，保持“真实版本”语义。
+_RAW_BASE = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main"
+_SRC_CACHE: dict[str, Path] = {}
+
+
+def _fetch_upstream(rel: str) -> Path:
+    """下载 Hermes 源文件到会话级缓存目录；不可用则 skip（不把 CI 弄成红）。"""
+    cached = _SRC_CACHE.get(rel)
+    if cached is not None and cached.exists():
+        return cached
+    target = Path(tempfile.mkdtemp(prefix="hermes-src-")) / Path(rel).name
+    try:
+        urllib.request.urlretrieve(f"{_RAW_BASE}/{rel}", target)
+    except Exception as exc:
+        pytest.skip(f"{rel} not found locally and download failed: {exc}")
+    if not target.exists() or target.stat().st_size == 0:
+        pytest.skip(f"{rel} download returned an empty file")
+    _SRC_CACHE[rel] = target
+    return target
+
+
+def _source(rel: str, local: Path) -> Path:
+    """活文件优先，缺失时回退到上游原始文件。"""
+    return local if local.is_file() else _fetch_upstream(rel)
+
 
 @pytest.fixture()
 def mod_paths(tmp_path: Path) -> dict[str, Path]:
-    """4 个 gateway 模块的原始副本（优先取 install 前的 .bak，避免把已注入块当原始代码）."""
+    """4 个 gateway 模块的原始副本（优先取 install 前的 .bak，避免把已注入块当原始代码）.
+
+    本机装了 Hermes 就用活文件，CI（无安装）回退到 GitHub main 的原始文件，下载失败则 skip。
+    """
     real = _default_module_paths()
     out: dict[str, Path] = {}
     for stem in _STEMS:
-        src = real[stem]
+        src = _source(f"gateway/{stem}.py", real[stem])
         bak = src.with_suffix(src.suffix + ".hermes_lark.bak")
         dst = tmp_path / f"{stem}.py"
         shutil.copy2(bak if bak.exists() else src, dst)
@@ -55,7 +86,7 @@ def run_copy(mod_paths: dict[str, Path]) -> dict[str, Path]:
 
 @pytest.fixture()
 def scheduler_copy(tmp_path: Path) -> Path:
-    src = _default_cron_path()
+    src = _source("cron/scheduler_delivery.py", _default_cron_path())
     bak = src.with_suffix(src.suffix + ".hermes_lark.bak")
     dst = tmp_path / "scheduler_delivery.py"
     shutil.copy2(bak if bak.exists() else src, dst)
