@@ -100,15 +100,18 @@ def _cron_patcher(path: Path) -> CronPatcher:
     return CronPatcher(cron_path=path)
 
 
-def _build_cron_hook_runner():
+def _build_cron_hook_runner(*, media_files_in_scope: bool = True):
     namespace: dict = {
         "job": {
             "name": "test",
             "next_run_at": "2026-06-10T14:30:00+08:00",
         }
     }
+    params = "targets, cleaned_delivery_content, loop, transport=None"
+    if media_files_in_scope:
+        params += ", media_files=None"
     source = (
-        "def deliver(targets, cleaned_delivery_content, loop, transport=None):\n"
+        f"def deliver({params}):\n"
         "    fallback = []\n"
         "    for platform_name, chat_id in targets:\n"
         "        delivered = False\n"
@@ -774,7 +777,7 @@ class TestCronApplyRemove:
         sent = []
 
         def fake_on_cron_deliver(
-            *, chat_id, content, loop, task_name, run_time
+            *, chat_id, content, loop, task_name, run_time, media_files=None
         ):
             sent.append((chat_id, content, task_name, run_time))
             return True
@@ -819,6 +822,30 @@ class TestCronApplyRemove:
         assert fallback == ["oc_relay"]
         mock_deliver.assert_not_called()
 
+    def test_injected_hook_forwards_media_files(self) -> None:
+        """Hermes 已把 MEDIA 标签收进 media_files，钩子必须原样透传给插件补投."""
+        deliver = _build_cron_hook_runner()
+        media = [("/tmp/curve.png", False), ("/tmp/digest.md", False)]
+
+        with patch(
+            "hermes_lark_streaming.patch.on_cron_deliver", return_value=True
+        ) as mock_deliver:
+            fallback = deliver([("feishu", "oc_media")], "价格跌了", None, media_files=media)
+
+        assert mock_deliver.call_args[1]["media_files"] == media
+        assert fallback == []
+
+    def test_injected_hook_survives_missing_media_files_scope(self) -> None:
+        """旧版 Hermes 投递函数里没有 media_files：钩子仍要发出卡片，而不是抛 NameError."""
+        deliver = _build_cron_hook_runner(media_files_in_scope=False)
+
+        with patch("hermes_lark_streaming.patch.on_cron_deliver") as mock_deliver:
+            mock_deliver.return_value = True
+            fallback = deliver([("feishu", "oc_old")], "report", None)
+
+        assert mock_deliver.call_args[1]["media_files"] == []
+        assert fallback == []
+
 
 class TestCronBackupRestore:
     def test_backup_created_on_apply(self, scheduler_copy: Path) -> None:
@@ -861,7 +888,7 @@ class TestOnCronDeliverHook:
             assert on_cron_deliver(chat_id="c1", content="text", loop=None) is True
             ctrl.on_cron_deliver.assert_called_once_with(
                 chat_id="c1", content="text", loop=None,
-                task_name="", run_time="",
+                task_name="", run_time="", media_files=None,
             )
 
     def test_delegates_to_controller(self) -> None:
@@ -877,7 +904,7 @@ class TestOnCronDeliverHook:
             assert result is True
             ctrl.on_cron_deliver.assert_called_once_with(
                 chat_id="c1", content="hello", loop=loop,
-                task_name="", run_time="",
+                task_name="", run_time="", media_files=None,
             )
 
 

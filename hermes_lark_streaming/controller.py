@@ -543,12 +543,14 @@ class StreamCardController(StreamingController):
         loop: asyncio.AbstractEventLoop | None,
         task_name: str = "",
         run_time: str = "",
+        media_files: object = None,
     ) -> bool:
         """Cron 推送 — 包装为静态卡片发送，成功返回 True."""
         if not self.enabled or not content or not chat_id:
             return False
         coroutine = self._do_cron_deliver(
-            chat_id, content, task_name=task_name, run_time=run_time
+            chat_id, content, task_name=task_name, run_time=run_time,
+            media_files=media_files,
         )
         try:
             if loop is not None and loop.is_running() and not loop.is_closed():

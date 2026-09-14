@@ -130,6 +130,35 @@ def extract_media_paths(text: str) -> list[str]:
     return paths
 
 
+def hook_media_paths(media_files: object) -> list[str]:
+    """归一注入点传来的 ``media_files``，返回可投递的本地路径列表.
+
+    Hermes 在调用 cron / background 注入钩子**之前**就用 ``extract_media`` 把 ``MEDIA:`` 标签从正文里
+    剥掉了（``cron/scheduler_delivery.py``），路径只留在 ``media_files`` 里，形如
+    ``[(path, is_voice), ...]``。钩子把该变量原样传进来，这里归一成路径（也接受裸路径列表），
+    并复用本模块的存在性/体积/类型校验。
+    """
+    if not media_files or isinstance(media_files, (str, bytes)):
+        return []
+    if not isinstance(media_files, (list, tuple, set, frozenset)):
+        return []
+    paths: list[str] = []
+    seen: set[str] = set()
+    for entry in media_files:
+        raw = entry[0] if isinstance(entry, (tuple, list)) and entry else entry
+        if not isinstance(raw, (str, os.PathLike)):
+            continue
+        path = os.path.expanduser(str(raw))
+        if path in seen:
+            continue
+        seen.add(path)
+        if is_deliverable_media_file(path):
+            paths.append(path)
+        else:
+            _logger.warning("hook media: undeliverable path skipped: %s", path)
+    return paths[:MAX_MEDIA_FILES_PER_TURN]
+
+
 def media_paths_to_deliver(
     *,
     streamed: str,

@@ -304,15 +304,21 @@ def on_cron_deliver(
     loop: Any = None,
     task_name: str = "",
     run_time: str = "",
+    media_files: object = None,
 ) -> bool:
-    """[注入点 10] cron 推送 — 包装为飞书卡片发送."""
+    """[注入点 10] cron 推送 — 包装为飞书卡片发送.
+
+    ``media_files`` 由注入钩子从 Hermes 的投递循环里透传（``[(path, is_voice), ...]``）：
+    Hermes 在调用本钩子前就把 ``MEDIA:`` 标签从正文剥走，钩子返回 True 又会跳过它自己的
+    附件投递，所以附件必须由插件补投。
+    """
     try:
         ctrl = get_controller()
         if not ctrl.enabled:
             return False
         return bool(ctrl.on_cron_deliver(
             chat_id=chat_id, content=content, loop=loop,
-            task_name=task_name, run_time=run_time,
+            task_name=task_name, run_time=run_time, media_files=media_files,
         ))
     except Exception as exc:
         _logger.warning("on_cron_deliver error: %s", exc, exc_info=True)

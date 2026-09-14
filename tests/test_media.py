@@ -11,6 +11,7 @@ from hermes_lark_streaming.streaming.media import (
     MAX_MEDIA_FILES_PER_TURN,
     deliver_media_files,
     extract_media_paths,
+    hook_media_paths,
     is_deliverable_media_file,
     media_paths_to_deliver,
     strip_media_directives,
@@ -98,6 +99,53 @@ class TestExtractMediaPaths:
 
     def test_deliverable_extensions_include_common_docs(self) -> None:
         assert {".md", ".pdf", ".png", ".zip"} <= DELIVERABLE_EXTS
+
+
+class TestHookMediaPaths:
+    """注入钩子透传的 media_files 归一（Hermes 在调用钩子前已把 MEDIA 标签从正文剥走）."""
+
+    def test_accepts_path_voice_tuples(self, tmp_path) -> None:
+        path = _make_file(tmp_path)
+        assert hook_media_paths([(path, False)]) == [path]
+
+    def test_voice_flagged_entry_is_still_delivered(self, tmp_path) -> None:
+        path = _make_file(tmp_path, "note.mp3")
+        assert hook_media_paths([(path, True)]) == [path]
+
+    def test_accepts_bare_path_list(self, tmp_path) -> None:
+        path = _make_file(tmp_path)
+        assert hook_media_paths([path]) == [path]
+
+    def test_dedupes_and_keeps_order(self, tmp_path) -> None:
+        a = _make_file(tmp_path, "a.md")
+        b = _make_file(tmp_path, "b.png")
+        assert hook_media_paths([(a, False), (b, False), (a, False)]) == [a, b]
+
+    def test_drops_missing_and_unknown_and_empty_entries(self, tmp_path) -> None:
+        keep = _make_file(tmp_path)
+        assert (
+            hook_media_paths(
+                [
+                    (str(tmp_path / "gone.png"), False),
+                    (_make_file(tmp_path, "x.weird"), False),
+                    (),
+                    (None, False),
+                    ("", False),
+                    (keep, False),
+                ]
+            )
+            == [keep]
+        )
+
+    @pytest.mark.parametrize("value", [None, "", "report.png", {"path": "x"}, 42])
+    def test_ignores_non_list_like_inputs(self, value) -> None:
+        assert hook_media_paths(value) == []
+
+    def test_caps_at_per_turn_limit(self, tmp_path) -> None:
+        entries = [
+            (_make_file(tmp_path, f"f{i}.md"), False) for i in range(MAX_MEDIA_FILES_PER_TURN + 3)
+        ]
+        assert len(hook_media_paths(entries)) == MAX_MEDIA_FILES_PER_TURN
 
 
 class TestMediaPathsToDeliver:

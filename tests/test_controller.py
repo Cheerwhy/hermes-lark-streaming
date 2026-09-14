@@ -1940,6 +1940,114 @@ class TestCronDeliver:
         finally:
             loop.call_soon_threadsafe(loop.stop)
 
+    def test_delivers_hook_media_after_card(self, tmp_path) -> None:
+        """Hermes 在钩子之前就把 MEDIA 标签剥进 media_files，插件必须自己把附件补上."""
+        chart = tmp_path / "curve.png"
+        chart.write_bytes(b"png-bytes")
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_card"
+        mock_client.upload_file.return_value = "file_key_1"
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert (
+                ctrl.on_cron_deliver(
+                    chat_id="c1",
+                    content="价格跌到 1230 了",
+                    loop=loop,
+                    media_files=[(str(chart), False)],
+                )
+                is True
+            )
+        finally:
+            if not loop.is_closed():
+                loop.close()
+
+        card = mock_client.send_card_to_chat.call_args[0][1]
+        body = card["body"]["elements"][0]["content"]
+        assert "价格跌到 1230 了" in body
+        assert "MEDIA:" not in body
+        mock_client.upload_file.assert_awaited_once_with(str(chart), file_type="stream")
+        assert mock_client.send_file_to_chat.call_args[0][:2] == ("c1", "file_key_1")
+        assert mock_client.send_file_to_chat.call_args[1]["reply_to_message_id"] == "msg_card"
+
+    def test_card_only_when_hook_media_is_absent(self) -> None:
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_card"
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert ctrl.on_cron_deliver(chat_id="c1", content="hello", loop=loop) is True
+        finally:
+            if not loop.is_closed():
+                loop.close()
+
+        mock_client.upload_file.assert_not_awaited()
+        mock_client.send_file_to_chat.assert_not_awaited()
+
+    def test_media_delivery_failure_does_not_fail_the_card(self, tmp_path) -> None:
+        chart = tmp_path / "curve.png"
+        chart.write_bytes(b"png-bytes")
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_card"
+        mock_client.upload_file.side_effect = RuntimeError("upload boom")
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert (
+                ctrl.on_cron_deliver(
+                    chat_id="c1", content="text", loop=loop, media_files=[(str(chart), False)]
+                )
+                is True
+            )
+        finally:
+            if not loop.is_closed():
+                loop.close()
+
+        mock_client.send_card_to_chat.assert_called_once()
+        mock_client.send_file_to_chat.assert_not_awaited()
+
+    def test_undeliverable_hook_media_is_skipped(self) -> None:
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_card"
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert (
+                ctrl.on_cron_deliver(
+                    chat_id="c1",
+                    content="text",
+                    loop=loop,
+                    media_files=[("/tmp/does-not-exist-hermes.png", False)],
+                )
+                is True
+            )
+        finally:
+            if not loop.is_closed():
+                loop.close()
+
+        mock_client.upload_file.assert_not_awaited()
+
 
 class TestBackgroundDeliver:
     @pytest.mark.asyncio
