@@ -44,6 +44,9 @@ DELIVERABLE_EXTS = frozenset(
     }
 )
 
+# 图片按 image 消息发送（聊天内联显示）；与 Hermes `gateway/platforms/base.py::_IMAGE_EXTS` 同口径。
+IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
+
 # 飞书上传时的 file_type（决定预览方式）；未列出的一律 stream。
 FEISHU_FILE_TYPES = {
     ".mp4": "mp4", ".mov": "mp4", ".avi": "mp4", ".m4v": "mp4",
@@ -99,6 +102,11 @@ def normalize_media_path(raw: str) -> str | None:
 
 def _has_deliverable_extension(path: str) -> bool:
     return Path(path).suffix.lower() in DELIVERABLE_EXTS
+
+
+def _is_image_path(path: str) -> bool:
+    """图片走 image 消息内联显示，其余走 file 消息."""
+    return Path(path).suffix.lower() in IMAGE_EXTS
 
 
 def is_deliverable_media_file(path: str) -> bool:
@@ -238,16 +246,25 @@ async def deliver_media_files(
     sent = 0
     for path in paths[:MAX_MEDIA_FILES_PER_TURN]:
         try:
-            file_type = FEISHU_FILE_TYPES.get(Path(path).suffix.lower(), "stream")
-            file_key = await client.upload_file(path, file_type=file_type)
-            if not file_key:
-                _logger.warning("media delivery: upload failed for %s", path)
-                continue
-            await client.send_file_to_chat(
-                chat_id,
-                file_key,
-                reply_to_message_id=reply_to_message_id,
-            )
+            image_key = await client.upload_local_image(path) if _is_image_path(path) else None
+            if image_key:
+                # 图片走 image 消息：聊天里直接内联显示，而不是一个文件卡片。
+                await client.send_image_to_chat(
+                    chat_id,
+                    image_key,
+                    reply_to_message_id=reply_to_message_id,
+                )
+            else:
+                file_type = FEISHU_FILE_TYPES.get(Path(path).suffix.lower(), "stream")
+                file_key = await client.upload_file(path, file_type=file_type)
+                if not file_key:
+                    _logger.warning("media delivery: upload failed for %s", path)
+                    continue
+                await client.send_file_to_chat(
+                    chat_id,
+                    file_key,
+                    reply_to_message_id=reply_to_message_id,
+                )
             sent += 1
         except Exception:
             _logger.warning("media delivery failed for %s", path, exc_info=True)

@@ -230,6 +230,41 @@ class TestDeliverMediaFiles:
         assert first_call.args == ("chat_1", "file_key_a")
 
     @pytest.mark.asyncio
+    async def test_image_goes_out_as_inline_image(self, tmp_path) -> None:
+        """图片走 image 消息（聊天内联显示），不是 file 消息."""
+        chart = _make_file(tmp_path, "curve.png")
+        client = MagicMock()
+        client.upload_local_image = AsyncMock(return_value="img_key")
+        client.send_image_to_chat = AsyncMock(return_value="msg_id")
+        client.upload_file = AsyncMock()
+        client.send_file_to_chat = AsyncMock()
+
+        sent = await deliver_media_files(client, "chat_1", [chart], reply_to_message_id="card_1")
+
+        assert sent == 1
+        client.upload_local_image.assert_awaited_once_with(chart)
+        assert client.send_image_to_chat.await_args.args == ("chat_1", "img_key")
+        assert client.send_image_to_chat.await_args.kwargs["reply_to_message_id"] == "card_1"
+        client.upload_file.assert_not_awaited()
+        client.send_file_to_chat.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_image_upload_failure_falls_through_to_file(self, tmp_path) -> None:
+        """image 通道失败时不能让附件静默丢失——退回 file 消息."""
+        chart = _make_file(tmp_path, "curve.png")
+        client = MagicMock()
+        client.upload_local_image = AsyncMock(return_value=None)
+        client.upload_file = AsyncMock(return_value="file_key")
+        client.send_file_to_chat = AsyncMock(return_value="msg_id")
+        client.send_image_to_chat = AsyncMock()
+
+        sent = await deliver_media_files(client, "chat_1", [chart])
+
+        assert sent == 1
+        client.upload_file.assert_awaited_once_with(chart, file_type="stream")
+        client.send_image_to_chat.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_file_type_follows_extension(self, tmp_path) -> None:
         pdf = _make_file(tmp_path, "doc.pdf")
         client = MagicMock()

@@ -1949,7 +1949,7 @@ class TestCronDeliver:
         ctrl._cfg.enabled = True
         mock_client = AsyncMock()
         mock_client.send_card_to_chat.return_value = "msg_card"
-        mock_client.upload_file.return_value = "file_key_1"
+        mock_client.upload_local_image.return_value = "img_key_1"
         ctrl._client = mock_client
         ctrl._initialized = True
 
@@ -1972,9 +1972,39 @@ class TestCronDeliver:
         body = card["body"]["elements"][0]["content"]
         assert "价格跌到 1230 了" in body
         assert "MEDIA:" not in body
-        mock_client.upload_file.assert_awaited_once_with(str(chart), file_type="stream")
+        # 图片走 image 消息内联显示，不是文件卡片。
+        mock_client.upload_local_image.assert_awaited_once_with(str(chart))
+        assert mock_client.send_image_to_chat.call_args[0][:2] == ("c1", "img_key_1")
+        assert mock_client.send_image_to_chat.call_args[1]["reply_to_message_id"] == "msg_card"
+        mock_client.upload_file.assert_not_awaited()
+
+    def test_delivers_hook_non_image_as_file(self, tmp_path) -> None:
+        report = tmp_path / "digest.md"
+        report.write_text("日报", encoding="utf-8")
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_card"
+        mock_client.upload_file.return_value = "file_key_1"
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert (
+                ctrl.on_cron_deliver(
+                    chat_id="c1", content="日报好了", loop=loop, media_files=[(str(report), False)]
+                )
+                is True
+            )
+        finally:
+            if not loop.is_closed():
+                loop.close()
+
+        mock_client.upload_local_image.assert_not_awaited()
+        mock_client.upload_file.assert_awaited_once_with(str(report), file_type="stream")
         assert mock_client.send_file_to_chat.call_args[0][:2] == ("c1", "file_key_1")
-        assert mock_client.send_file_to_chat.call_args[1]["reply_to_message_id"] == "msg_card"
 
     def test_card_only_when_hook_media_is_absent(self) -> None:
         ctrl = StreamCardController()
@@ -1992,7 +2022,9 @@ class TestCronDeliver:
             if not loop.is_closed():
                 loop.close()
 
+        mock_client.upload_local_image.assert_not_awaited()
         mock_client.upload_file.assert_not_awaited()
+        mock_client.send_image_to_chat.assert_not_awaited()
         mock_client.send_file_to_chat.assert_not_awaited()
 
     def test_media_delivery_failure_does_not_fail_the_card(self, tmp_path) -> None:
@@ -2003,7 +2035,7 @@ class TestCronDeliver:
         ctrl._cfg.enabled = True
         mock_client = AsyncMock()
         mock_client.send_card_to_chat.return_value = "msg_card"
-        mock_client.upload_file.side_effect = RuntimeError("upload boom")
+        mock_client.upload_local_image.side_effect = RuntimeError("upload boom")
         ctrl._client = mock_client
         ctrl._initialized = True
 
@@ -2020,7 +2052,7 @@ class TestCronDeliver:
                 loop.close()
 
         mock_client.send_card_to_chat.assert_called_once()
-        mock_client.send_file_to_chat.assert_not_awaited()
+        mock_client.send_image_to_chat.assert_not_awaited()
 
     def test_undeliverable_hook_media_is_skipped(self) -> None:
         ctrl = StreamCardController()
@@ -2046,6 +2078,7 @@ class TestCronDeliver:
             if not loop.is_closed():
                 loop.close()
 
+        mock_client.upload_local_image.assert_not_awaited()
         mock_client.upload_file.assert_not_awaited()
 
 
