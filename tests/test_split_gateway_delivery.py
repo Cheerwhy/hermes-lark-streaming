@@ -10,7 +10,7 @@ from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from hermes_sources import SPLIT_LEDGER_REVISION, SPLIT_REVISION, source_at
+from hermes_sources import SPLIT_LEDGER_REVISION, SPLIT_REVISION, TARGET_REVISION, source_at
 from test_split_gateway import context, method, wire_owner
 
 import hermes_lark_streaming.patch as hooks
@@ -19,7 +19,8 @@ from hermes_lark_streaming.feishu import FeishuAPIError
 from hermes_lark_streaming.split_gateway import inject_gateway
 
 
-@pytest.fixture(scope="module", params=[SPLIT_REVISION, SPLIT_LEDGER_REVISION], ids=["split", "split-ledger"])
+@pytest.fixture(scope="module", params=[SPLIT_REVISION, SPLIT_LEDGER_REVISION, TARGET_REVISION],
+                ids=["split", "split-ledger", "target"])
 def upstream_sources(request):
     names = [
         "gateway/run_turn_runner.py", "gateway/run_turn.py", "gateway/run_notifications.py",
@@ -76,6 +77,7 @@ def upstream(upstream_sources, monkeypatch):
     return NS(
         generated=generated, Agent=agent_class, Consumer=consumer_module.GatewayStreamConsumer,
         ConsumerConfig=consumer_module.StreamConsumerConfig,
+        original_runner=upstream_sources["gateway/run_turn_runner.py"],
     )
 
 
@@ -186,7 +188,16 @@ async def test_disabled_plugin_keeps_native_interim_bookkeeping(upstream, contro
         assert not tick.got_segment_break
         assert not turn.agent._current_streamed_assistant_text
     if voice:
-        voice.on_delta.assert_called_once_with("I will investigate the failure.")
+        # Disabled hooks must preserve that revision's native TTS behavior, including
+        # the interim flush boundary introduced after the original split release.
+        native_voice = NS(on_delta=Mock())
+        turn.ctx.streaming_tts_consumer_holder = [native_voice]
+        _, delta, interim, _ = method(
+            {"run_turn_runner.py": upstream.original_runner}, "run_turn_runner.py", "_setup_stream_consumer",
+        )(turn.owner, "feishu")
+        delta("I will investigate the failure.")
+        interim("I will investigate the failure.", already_streamed=True)
+        assert voice.on_delta.call_args_list == native_voice.on_delta.call_args_list
     turn.consumer.finish()
     await turn.consumer.run()
 

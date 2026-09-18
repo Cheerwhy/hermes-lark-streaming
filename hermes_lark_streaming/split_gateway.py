@@ -83,7 +83,16 @@ def inject_gateway(filename: str, content: str) -> str:
         for node in statement("_hm_admit_event", "source = event.source", 2):
             insert(node, p._feishu_normalize_hook, after=True)
         # This outer finally also covers preparation failures and cancellation.
-        node = statement("_handle_message", "self._restore_moa_one_shot(event, _quick_key)")[0]
+        restores = {ast.dump(ast.parse(source).body[0]) for source in (
+            "self._restore_moa_one_shot(event, _quick_key)",
+            "self._restore_pending_one_turn_model_override(_quick_key, _run_generation)",
+        )}
+        node = select("_handle_message", lambda n: isinstance(n, ast.Expr) and ast.dump(n) in restores)[0]
+        inbound_handler = scope("_handle_message")
+        if not isinstance(inbound_handler, (ast.FunctionDef, ast.AsyncFunctionDef)) or not any(
+            isinstance(n, ast.Try) and node in n.finalbody for n in inbound_handler.body
+        ):
+            raise p.PatcherError(f"{filename}: one-turn restore must remain in the outer finally")
         insert(node, p._abort_hook)
 
     elif filename == "run_busy.py":
@@ -132,11 +141,21 @@ def inject_gateway(filename: str, content: str) -> str:
                             except Exception:
                                 logger.debug('Card streaming TTS failed', exc_info=True)
                     def _lark_interim_only(text, *, already_streamed=False):
+                        if not ctx._run_still_current():
+                            return
                         try:
-                            if text and not already_streamed and ctx._run_still_current():
+                            if text and not already_streamed:
                                 on_thinking_delta(message_id={identity}, text=text)
                         except Exception:
                             logger.debug('Card interim callback failed', exc_info=True)
+                        if stts is not None:
+                            try:
+                                stts.on_delta(None)
+                                if not already_streamed:
+                                    stts.on_delta(text)
+                                    stts.on_delta(None)
+                            except Exception:
+                                logger.debug('Card interim TTS failed', exc_info=True)
                     return None, _lark_stream_delta, _lark_interim_only, True
         """), after=True)
         wire = "_wire_turn_agent_callbacks"

@@ -15,6 +15,7 @@ import pytest
 LEGACY_REVISION = "b20cc5f787ea816ea8645603b7b2ac8234dcb8b4"
 SPLIT_REVISION = "2237be355906fbe6065ce1815711eee52b2d646e"  # Hermes v0.21.1
 SPLIT_LEDGER_REVISION = "13c580422c0b28a78d42b0e10decad6f121e6c45"  # Queued inbound delivery ledger
+TARGET_REVISION = "345cd2b057a452236de401d3534b8502a7465e8d"  # Generation-scoped one-turn overrides
 
 
 @cache

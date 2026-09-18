@@ -491,7 +491,7 @@ class StreamCardController(StreamingController):
         task_name: str = "",
         run_time: str = "",
     ) -> bool:
-        """Cron 推送 — 包装为静态卡片发送，成功返回 True."""
+        """Return True when card delivery owns the text, including an uncertain timeout."""
         if not self.enabled or not content or not chat_id:
             return False
         coroutine = self._do_cron_deliver(
@@ -504,7 +504,18 @@ class StreamCardController(StreamingController):
                 except Exception:
                     coroutine.close()
                     raise
-                future.result(timeout=30)
+                try:
+                    future.result(timeout=30)
+                except TimeoutError:
+                    if future.done():
+                        # Distinguish a completed send's own TimeoutError from our wait budget.
+                        future.result()
+                    else:
+                        # Cancellation cannot retract an accepted remote send. Keep ownership
+                        # rather than racing the still-running card with a native text fallback.
+                        future.add_done_callback(self._on_bg_task_done)
+                        _logger.warning("cron card delivery pending after timeout: chat=%s", chat_id[:12])
+                        return True
             else:
                 asyncio.run(coroutine)
             _logger.info("cron card delivered: chat=%s len=%d", chat_id[:12], len(content))

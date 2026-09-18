@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from hermes_sources import SPLIT_LEDGER_REVISION, SPLIT_REVISION, source_at
+from hermes_sources import SPLIT_LEDGER_REVISION, SPLIT_REVISION, TARGET_REVISION, source_at
 
 from hermes_lark_streaming import __main__ as cli
 from hermes_lark_streaming import patcher as patcher_module
@@ -21,7 +21,8 @@ from hermes_lark_streaming.patcher import (
 from hermes_lark_streaming.split_gateway import GATEWAY_FILES
 
 
-@pytest.fixture(params=[SPLIT_REVISION, SPLIT_LEDGER_REVISION], ids=["split", "split-ledger"])
+@pytest.fixture(params=[SPLIT_REVISION, SPLIT_LEDGER_REVISION, TARGET_REVISION],
+                ids=["split", "split-ledger", "target"])
 def installation(tmp_path: Path, request: pytest.FixtureRequest) -> tuple[Patcher, CronPatcher]:
     paths = ["gateway/run.py", *(f"gateway/{name}" for name in GATEWAY_FILES),
              "cron/scheduler.py", "cron/scheduler_delivery.py"]

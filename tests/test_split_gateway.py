@@ -17,7 +17,7 @@ from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from hermes_sources import SPLIT_REVISION, source_at
+from hermes_sources import SPLIT_REVISION, TARGET_REVISION, source_at
 
 from hermes_lark_streaming.patcher import MARKERS, PatcherError, _remove_block
 from hermes_lark_streaming.split_gateway import GATEWAY_FILES, inject_gateway
@@ -461,6 +461,70 @@ def test_tts_error_does_not_replay_delta_to_native(patched, hooks):
     _, delta, _, _ = method(patched, "run_turn_runner.py", "_setup_stream_consumer")(owner, "feishu")
     delta("answer")
     voice.on_delta.assert_called_once_with("answer")
+
+
+@pytest.mark.parametrize("revision", [SPLIT_REVISION, TARGET_REVISION])
+@pytest.mark.parametrize("card_error", [False, True])
+def test_card_interim_preserves_tts_boundaries(hooks, revision, card_error):
+    source = source_at("gateway/run_turn_runner.py", revision)
+    generated = {"run_turn_runner.py": inject_gateway("run_turn_runner.py", source)}
+    voice = Mock()
+    ctx = context(streaming_tts_consumer_holder=[voice])
+    owner = NS(_ctx=ctx, _runner=NS(config=NS(streaming=object())))
+    if card_error:
+        hooks.on_thinking_delta.side_effect = RuntimeError("card unavailable")
+    _, delta, interim, enabled = method(generated, "run_turn_runner.py", "_setup_stream_consumer")(
+        owner, "feishu")
+    assert enabled
+    delta("streamed")
+    interim("streamed", already_streamed=True)
+    interim("commentary")
+    assert [call.args for call in voice.on_delta.call_args_list] == [
+        ("streamed",), (None,), (None,), ("commentary",), (None,),
+    ]
+    ctx._run_still_current.return_value = False
+    interim("stale")
+    assert voice.on_delta.call_count == 5
+    hooks.on_thinking_delta.assert_called_once_with(message_id="inbound", text="commentary")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
+async def test_target_inbound_finally_preserves_generation_cleanup(hooks, monkeypatch, outcome):
+    source = source_at("gateway/run_inbound.py", TARGET_REVISION)
+    generated = {"run_inbound.py": inject_gateway("run_inbound.py", source)}
+    monkeypatch.setitem(sys.modules, "gateway.run", NS(_AGENT_PENDING_SENTINEL=object()))
+    event = NS(message_id="inbound")
+    source_obj = context().source
+    order = []
+    hooks.on_message_aborted.side_effect = lambda **kw: order.append(("card", kw["message_id"]))
+    owner = NS(
+        _hm_admit_event=AsyncMock(return_value=(event, source_obj, True)),
+        _hm_estop_gate=lambda *a: None, _session_key_for_source=lambda _: "session",
+        _hm_pending_reply_intercepts=AsyncMock(return_value=None), _hm_evict_idle_stale_agent=Mock(),
+        _is_session_running=lambda _: False,
+        _hm_dispatch_idle_commands=AsyncMock(return_value=(False, None)),
+        _claim_active_session_slot=lambda *a: (None, None),
+        _hm_rescue_orphaned_fifo=lambda *a: (event, source_obj, True),
+        _session_state=lambda _: NS(turn=NS()), _persist_active_agents=Mock(),
+        _begin_session_run_generation=lambda _: 17,
+        _handle_message_with_agent=AsyncMock(return_value="answer"), _run_post_turn_hooks=AsyncMock(),
+        _restore_pending_one_turn_model_override=lambda key, gen: order.append(("restore", key, gen)),
+        _clear_durable_active_turn=AsyncMock(side_effect=lambda e: order.append(("durable", e.message_id))),
+        _release_running_agent_state=lambda key, *, run_generation: order.append(("release", key, run_generation)),
+        _release_turn_lease=lambda key, gen: order.append(("lease", key, gen)),
+    )
+    fn = method(generated, "run_inbound.py", "_handle_message",
+                TurnLeaseTimeoutError=type("LeaseError", (Exception,), {}))
+    if outcome == "success":
+        assert await fn(owner, event) == "answer"
+    else:
+        error = RuntimeError if outcome == "error" else asyncio.CancelledError
+        owner._handle_message_with_agent.side_effect = error()
+        with pytest.raises(error):
+            await fn(owner, event)
+    assert order == [("card", "inbound"), ("restore", "session", 17), ("durable", "inbound"),
+                     ("release", "session", 17), ("lease", "session", 17)]
 
 
 @pytest.mark.asyncio

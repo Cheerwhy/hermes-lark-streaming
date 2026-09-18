@@ -2012,7 +2012,8 @@ class TestCronDeliver:
             if not loop.is_closed():
                 loop.close()
 
-    def test_returns_false_on_send_failure(self) -> None:
+    @pytest.mark.parametrize("error", [RuntimeError("API error"), TimeoutError("API timeout")])
+    def test_returns_false_on_send_failure(self, error: Exception) -> None:
         import threading
 
         ctrl = StreamCardController()
@@ -2020,7 +2021,7 @@ class TestCronDeliver:
         ctrl._cfg.enabled = True
 
         mock_client = AsyncMock()
-        mock_client.send_card_to_chat.side_effect = RuntimeError("API error")
+        mock_client.send_card_to_chat.side_effect = error
         ctrl._client = mock_client
         ctrl._initialized = True
 

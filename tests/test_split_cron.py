@@ -1,12 +1,15 @@
-"""Executable split-cron fixtures; no installed Hermes checkout or network needed."""
+"""Executable synthetic and revision-pinned cron lanes, without live installation or sends."""
 
+import ast
 import asyncio
 import logging
+import sys
 import textwrap
 from concurrent.futures import Future
 from types import SimpleNamespace
 
 import pytest
+from hermes_sources import TARGET_REVISION, source_at
 
 from hermes_lark_streaming import patch
 from hermes_lark_streaming.controller import StreamCardController
@@ -131,7 +134,7 @@ def target(**overrides):
     return SimpleNamespace(**fields)
 
 
-def runtime(monkeypatch, *, hook=True, patched=True):
+def runtime(monkeypatch, *, hook=True, patched=True, target_revision=False):
     events = []
 
     def card(**kwargs):
@@ -162,6 +165,21 @@ def runtime(monkeypatch, *, hook=True, patched=True):
         _send_to_platform=standalone,
     )
     exec(compile(inject_cron(SOURCE) if patched else SOURCE, '<cron-fixture>', 'exec'), namespace)
+    if target_revision:
+        # Execute the target's actual send lanes; isolate only imports and external I/O.
+        monkeypatch.setitem(sys.modules, 'agent.async_utils', SimpleNamespace(safe_schedule_threadsafe=None))
+        monkeypatch.setitem(sys.modules, 'gateway.delivery', SimpleNamespace(
+            DeliveryRouter=namespace['DeliveryRouter'], DeliveryTarget=None))
+        monkeypatch.setitem(sys.modules, 'tools.send_message_tool', SimpleNamespace(_send_to_platform=standalone))
+        namespace['_sched'] = SimpleNamespace(_interpreter_shutting_down=lambda: False)
+        source = inject_cron(source_at('cron/scheduler_delivery.py', TARGET_REVISION))
+        tree = ast.parse(source)
+        functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in (
+            '_live_send_text', '_deliver_via_live_adapter', '_standalone_send')]
+        module = ast.Module(body=[ast.ImportFrom(
+            module='__future__', names=[ast.alias(name='annotations')], level=0), *functions], type_ignores=[])
+        ast.fix_missing_locations(module)
+        exec(compile(module, '<target-cron>', 'exec'), namespace)
     return namespace['_deliver_result'], events
 
 
@@ -272,22 +290,27 @@ def test_rejected_live_route_does_not_consume_standalone_attempt(monkeypatch):
     assert [e[0] for e in events] == ['native_text', 'card', 'mirror']
 
 
-def test_pending_controller_timeout_is_not_retried_across_lanes(monkeypatch):
-    run, events = runtime(monkeypatch)
+@pytest.mark.parametrize('target_revision', [False, True])
+@pytest.mark.parametrize('live', [False, True])
+def test_pending_controller_timeout_is_not_retried_across_lanes(monkeypatch, target_revision, live):
+    run, events = runtime(monkeypatch, target_revision=target_revision)
     pending = []
     sent = []
 
     async def send(chat_id, content, **kwargs):
         sent.append((chat_id, content))
 
-    controller = SimpleNamespace(enabled=True, _do_cron_deliver=send)
+    controller = SimpleNamespace(enabled=True, _do_cron_deliver=send,
+                                 _on_bg_task_done=StreamCardController._on_bg_task_done)
     loop = SimpleNamespace(is_running=lambda: True, is_closed=lambda: False)
 
     def schedule(coro, target_loop):
         assert target_loop is loop
         future = Future()
         # Exercise the real pending-future TimeoutError without waiting 30 seconds.
-        def wait(timeout):
+        def wait(timeout=None):
+            if timeout is None:
+                return Future.result(future)
             assert timeout == 30
             return Future.result(future, timeout=0)
         monkeypatch.setattr(future, 'result', wait)
@@ -298,19 +321,24 @@ def test_pending_controller_timeout_is_not_retried_across_lanes(monkeypatch):
     monkeypatch.setattr(patch, 'on_cron_deliver', lambda **kwargs:
                         StreamCardController.on_cron_deliver(controller, **kwargs))
     try:
-        targets = [target(loop=loop, native_failure=True),
-                   target(loop=loop, native_failure=True, chat_id='chat-2')]
-        assert run({'targets': targets, 'media': ['file']}, 'brief') == ([], [])
+        targets = [target(loop=loop, native_failure=True, live_adapter_ready=live),
+                   target(loop=loop, native_failure=True, live_adapter_ready=live, chat_id='chat-2')]
+        expected_unverified = ['feishu:chat-1', 'feishu:chat-2'] if live else []
+        assert run({'targets': targets, 'media': ['file']}, 'brief') == ([], expected_unverified)
         assert len(pending) == 2
         # Hermes creates a new _TargetDelivery even for the same chat on a later run.
-        later = target(loop=loop, native_failure=True, job={'id': 'job-2'})
-        assert run({'targets': [later], 'media': ['file']}, 'brief') == ([], [])
+        later = target(loop=loop, native_failure=True, live_adapter_ready=live, job={'id': 'job-2'})
+        assert run({'targets': [later], 'media': ['file']}, 'brief') == ([], ['feishu:chat-1'] if live else [])
         assert len(pending) == 3
         assert all(not future.done() for _, future in pending)
-        assert [e for e in events if e[0] == 'standalone'] == [
-            ('standalone', chat_id, 'brief', ['file'], None)
-            for chat_id in ('chat-1', 'chat-2', 'chat-1')
-        ]
+        assert not any(e[0] == 'native_text' for e in events)
+        if live:
+            assert not any(e[0] == 'standalone' for e in events)
+            assert len([e for e in events if e[0] == 'media']) == 3
+        else:
+            assert [e for e in events if e[0] == 'standalone'] == [
+                ('standalone', chat_id, '', ['file'], None) for chat_id in ('chat-1', 'chat-2', 'chat-1')
+            ]
         # The old uncertain sends can still complete; the guard does not cancel them.
         for coro, future in pending:
             future.set_result(asyncio.run(coro))

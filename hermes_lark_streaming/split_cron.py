@@ -37,7 +37,7 @@ def _try_cron_card(t: Any, text: str, *, route_thread_id: Any = None,
 
         if getattr(t, "_hermes_lark_card_attempted", False):
             return False
-        # A False result or exception can leave a send pending. This target is
+        # Attempt the card only once across native fallback lanes. This target is
         # shared by both lanes, but recreated for each target of every job run.
         t._hermes_lark_card_attempted = True
         return bool(on_cron_deliver(
