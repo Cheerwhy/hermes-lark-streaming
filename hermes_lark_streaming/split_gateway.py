@@ -224,7 +224,13 @@ def inject_gateway(filename: str, content: str) -> str:
         insert(node, p._bg_deliver_hook, after=True)
 
         first = "_run_agent_deliver_first_response"
-        node = assignment(first, "_already_streamed")
+        # Anchor on the stream-confirmed assignment specifically: later upstream revisions
+        # reset ``_already_streamed = False`` inside the intentional-silence branch, so a
+        # target-name-only lookup is ambiguous. Match the call-shaped primary assignment.
+        node = select(first, lambda n: isinstance(n, ast.Assign)
+                      and any(ast.unparse(t) == "_already_streamed" for t in n.targets)
+                      and isinstance(n.value, ast.Call)
+                      and ast.unparse(n.value.func) == "self._run_agent_stream_confirmed_final_delivery")[0]
         # No use of on_queued_followup_boundary: it destroys attachment-bearing text.
         insert(node, guarded("FOLLOWUP_COMPLETE", f"""
             from hermes_lark_streaming.patch import (

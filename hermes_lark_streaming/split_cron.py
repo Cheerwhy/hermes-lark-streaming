@@ -120,12 +120,28 @@ def inject_cron(content: str) -> str:
     if live_anchor not in live.body or standalone_anchor not in standalone.body:
         raise PatcherError("Split cron text-send seams must be direct function statements")
     send_functions = [n for n in standalone.body
-                      if isinstance(n, ast.FunctionDef) and n.name == "_send"]
+                      if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "_send"]
     if len(send_functions) != 1:
         raise PatcherError("Split cron requires exactly one standalone _send closure")
-    statement(send_functions[0], "return _send_to_platform("
-              "t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id, "
-              "media_files=media_files)")
+    # Confirm this closure is the platform send channel. Upstream later wrapped the call in
+    # ``asyncio.wait_for(...)`` and made the closure async (send-timeout guard), so accept both
+    # the bare ``return _send_to_platform(...)`` and the awaited ``wait_for``-wrapped form.
+    send_returns = [n for n in _scoped_nodes(send_functions[0])
+                    if isinstance(n, ast.Return) and n.value is not None]
+    if len(send_returns) != 1:
+        raise PatcherError("Split cron requires exactly one return in the _send closure")
+    send_call = send_returns[0].value
+    assert send_call is not None  # narrowing: the comprehension predicate guarantees this
+    if isinstance(send_call, ast.Await):
+        send_call = send_call.value
+    if (isinstance(send_call, ast.Call) and ast.unparse(send_call.func) == "asyncio.wait_for"
+            and send_call.args):
+        send_call = send_call.args[0]
+    if ast.unparse(send_call) != (
+            "_send_to_platform(t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id, "
+            "media_files=media_files)"):
+        raise PatcherError(
+            "Split cron seam missing or ambiguous in _send: return _send_to_platform(...)")
 
     blocks = [
         (live_anchor, [
