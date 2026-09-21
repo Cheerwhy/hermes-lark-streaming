@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import threading
 import time
@@ -16,6 +17,7 @@ import pytest
 import hermes_lark_streaming.controller as controller_module
 from hermes_lark_streaming.controller import StreamCardController, get_controller
 from hermes_lark_streaming.feishu import FeishuAPIError, FeishuClient
+from hermes_lark_streaming.patch import on_message_completed_wait
 from hermes_lark_streaming.streaming.segment_helper import estimate_segment_elements
 from hermes_lark_streaming.streaming.segments import Segment, SegmentState
 from hermes_lark_streaming.streaming.session import CardSession, SessionState
@@ -690,6 +692,96 @@ def _setup_ctrl() -> StreamCardController:
 
 
 class TestAwaitedCompletion:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("through_hook", [False, True])
+    @pytest.mark.parametrize("trailing_tool", [False, True])
+    @pytest.mark.parametrize("rolled_over", [False, True])
+    @pytest.mark.parametrize(
+        ("answer", "options", "expected"),
+        [
+            pytest.param(
+                "Request failed: service unavailable", {"is_error": True, "reconcile_answer": True},
+                ["Useful partial", "Request failed: service unavailable"], id="explicit-error",
+            ),
+            pytest.param(
+                "Request failed: service unavailable", {"is_error": True},
+                ["Useful partial"], id="legacy-error",
+            ),
+            pytest.param(
+                "<thinking></thinking>Final normalized notice", {"reconcile_answer": True},
+                ["Useful partial", "Final normalized notice"], id="normalized-notice",
+            ),
+            pytest.param(
+                "Useful partial\n\nSession reset.", {"reconcile_answer": True},
+                ["Useful partial\n\nSession reset."], id="reset-suffix",
+            ),
+            pytest.param(
+                "Useful partial", {"reconcile_answer": True}, ["Useful partial"], id="identical",
+            ),
+            pytest.param(
+                "Earlier rollover content. Useful partial", {}, ["Useful partial"], id="default",
+            ),
+            pytest.param(
+                "Useful partial\n\nSession reset.", {"reconcile_answer": False},
+                ["Useful partial"], id="disabled",
+            ),
+        ],
+    )
+    async def test_completion_reconciliation(
+        self, answer: str, options: dict, expected: list[str], trailing_tool: bool, through_hook: bool,
+        rolled_over: bool,
+    ) -> None:
+        ctrl = _setup_ctrl()
+        session = CardSession("msg_reconcile", "chat", asyncio.get_running_loop())
+        session.state = SessionState.STREAMING
+        session.card_id = "card_reconcile"
+        session.card_msg_id = "reply_reconcile"
+        ctrl._sessions[session.message_id] = session
+        state = session.segment_state
+        assert state is not None
+        if rolled_over:
+            state.on_answer_delta("Earlier rollover content.")
+            session.split_index = 1
+        state.on_reasoning_delta("Prior reasoning")
+        session.tool_use.record_start("terminal", "preserved-command")
+        session.tool_use.record_end("terminal", output="preserved-output")
+        state.on_tool_event(1)
+        state.on_answer_delta("Useful partial")
+        if trailing_tool:
+            session.tool_use.record_start("read_file", "preserved-file")
+            session.tool_use.record_end("read_file")
+            state.on_tool_event(2)
+        original_segments = list(state.segments)
+        for segment in state.segments:
+            segment.created = True
+            segment.dirty = False
+
+        if through_hook:
+            sent = await on_message_completed_wait.__wrapped__(
+                ctrl=ctrl, message_id=session.message_id, answer=answer, **options,
+            )
+        else:
+            sent = await ctrl.on_completed_wait(message_id=session.message_id, answer=answer, **options)
+
+        assert sent is True
+        assert state.segments[:len(original_segments)] == original_segments
+        expected_answers = expected if trailing_tool else ["\n\n".join(expected)]
+        assert [seg.text for seg in session.active_segments() if seg.type == "answer"] == expected_answers
+        assert session.active_segments()[0].text == "Prior reasoning"
+        assert session.active_segments()[1].type == "tool"
+        if rolled_over:
+            assert state.segments[0].text == "Earlier rollover content."
+        assert session.state == SessionState.COMPLETED
+        ctrl._client.cardkit_update.assert_awaited_once()
+        card = ctrl._client.cardkit_update.call_args.args[1]
+        rendered = json.dumps(card)
+        for text in expected_answers:
+            assert json.dumps(text)[1:-1] in rendered
+        assert "Prior reasoning" in rendered
+        assert "preserved-command" in rendered
+        assert "<thinking>" not in rendered
+        assert "Earlier rollover content." not in rendered
+
     @pytest.mark.asyncio
     async def test_waits_for_queued_card_creation_before_success(self) -> None:
         ctrl = _setup_ctrl()
@@ -1920,7 +2012,8 @@ class TestCronDeliver:
             if not loop.is_closed():
                 loop.close()
 
-    def test_returns_false_on_send_failure(self) -> None:
+    @pytest.mark.parametrize("error", [RuntimeError("API error"), TimeoutError("API timeout")])
+    def test_returns_false_on_send_failure(self, error: Exception) -> None:
         import threading
 
         ctrl = StreamCardController()
@@ -1928,7 +2021,7 @@ class TestCronDeliver:
         ctrl._cfg.enabled = True
 
         mock_client = AsyncMock()
-        mock_client.send_card_to_chat.side_effect = RuntimeError("API error")
+        mock_client.send_card_to_chat.side_effect = error
         ctrl._client = mock_client
         ctrl._initialized = True
 

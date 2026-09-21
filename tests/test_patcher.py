@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import ast
 import logging
-import shutil
 import textwrap
-import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from hermes_sources import LEGACY_REVISION, source_at
 
 from hermes_lark_streaming.patcher import (
     MARKERS,
@@ -33,62 +32,18 @@ from hermes_lark_streaming.patcher import (
     _tool_hook,
 )
 
-RUN_SRC = Path.home() / ".hermes" / "hermes-agent" / "gateway" / "run.py"
-RUN_BAK = RUN_SRC.with_suffix(RUN_SRC.suffix + ".hermes_lark.bak")
-SAMPLES_DIR = Path(__file__).parent / "samples"
-SAMPLE_RUN = SAMPLES_DIR / "run.py"
-
-_RUN_URL = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/gateway/run.py"
-_CRON_URL = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/cron/scheduler.py"
-
-CRON_SRC = Path.home() / ".hermes" / "hermes-agent" / "cron" / "scheduler.py"
-CRON_BAK = CRON_SRC.with_suffix(CRON_SRC.suffix + ".hermes_lark.bak")
-SAMPLE_CRON = SAMPLES_DIR / "scheduler.py"
-
-def _ensure_sample() -> Path:
-    src = RUN_BAK if RUN_BAK.exists() else RUN_SRC
-    SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
-    if src.exists():
-        shutil.copy2(src, SAMPLE_RUN)
-        return SAMPLE_RUN
-    # CI fallback: download from GitHub
-    try:
-        urllib.request.urlretrieve(_RUN_URL, SAMPLE_RUN)
-    except Exception as exc:
-        pytest.skip(f"run.py not found locally and download failed: {exc}")
-    if not SAMPLE_RUN.exists() or SAMPLE_RUN.stat().st_size == 0:
-        pytest.skip("run.py download returned empty file")
-    return SAMPLE_RUN
-
 
 @pytest.fixture()
 def run_copy(tmp_path: Path) -> Path:
-    src = _ensure_sample()
     dst = tmp_path / "run.py"
-    shutil.copy2(src, dst)
+    dst.write_text(source_at("gateway/run.py", LEGACY_REVISION), encoding="utf-8")
     return dst
-
-
-def _ensure_cron_sample() -> Path:
-    src = CRON_BAK if CRON_BAK.exists() else CRON_SRC
-    SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
-    if src.exists():
-        shutil.copy2(src, SAMPLE_CRON)
-        return SAMPLE_CRON
-    try:
-        urllib.request.urlretrieve(_CRON_URL, SAMPLE_CRON)
-    except Exception as exc:
-        pytest.skip(f"scheduler.py not found locally and download failed: {exc}")
-    if not SAMPLE_CRON.exists() or SAMPLE_CRON.stat().st_size == 0:
-        pytest.skip("scheduler.py download returned empty file")
-    return SAMPLE_CRON
 
 
 @pytest.fixture()
 def scheduler_copy(tmp_path: Path) -> Path:
-    src = _ensure_cron_sample()
     dst = tmp_path / "scheduler.py"
-    shutil.copy2(src, dst)
+    dst.write_text(source_at("cron/scheduler.py", LEGACY_REVISION), encoding="utf-8")
     return dst
 
 
@@ -704,7 +659,7 @@ class TestCronVerify:
 
     def test_verify_fails_missing_cleaned_content(self, tmp_path: Path) -> None:
         p = tmp_path / "scheduler.py"
-        p.write_text("    delivered = False\n")
+        p.write_text("delivered = False\n")
         with pytest.raises(PatcherError, match="cleaned_delivery_content"):
             _cron_patcher(p).verify_target()
 

@@ -12,6 +12,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      HERMES_HOME: ${{ runner.temp }}/hermes-test-sources
     steps:
       - uses: actions/checkout@v6
 
@@ -28,6 +30,12 @@ jobs:
 
       - name: Run mypy
         run: python -m mypy hermes_lark_streaming/
+
+      - name: Fetch pinned Hermes test sources
+        run: |
+          revisions=$(PYTHONPATH=tests python -c 'from hermes_sources import LEGACY_REVISION, SPLIT_REVISION, SPLIT_LEDGER_REVISION; print(LEGACY_REVISION, SPLIT_REVISION, SPLIT_LEDGER_REVISION)')
+          git init "$HERMES_HOME/hermes-agent"
+          git -C "$HERMES_HOME/hermes-agent" fetch --no-tags --depth=1 https://github.com/NousResearch/hermes-agent.git $revisions
 
       - name: Run tests
         run: python -m pytest tests/ -v

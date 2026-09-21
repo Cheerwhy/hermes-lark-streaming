@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import ClassVar
 
 from .config import hermes_home
 
@@ -614,15 +615,17 @@ def _clarify_hook(indent: str) -> str:
         MK_CLARIFY_END,
         [
             "try:",
+            "    import functools",
             "    from hermes_lark_streaming.patch import on_clarify_enter, on_clarify_exit",
             "    _lark_clarify_orig = agent.clarify_callback",
-            "    def _lark_clarify_wrapper(question, choices, multi_select=False):",
+            "    @functools.wraps(_lark_clarify_orig)",
+            "    def _lark_clarify_wrapper(*args, **kwargs):",
             "        try:",
             "            _lark_clarify_msg_id = ctx.event_message_id",
             "            _lark_clarify_chat_id = ctx._status_chat_id",
             "            _lark_clarify_sk = ctx.session_key",
-            "        except NameError:",
-            "            _lark_clarify_msg_id = event_message_id",
+            "        except Exception:",
+            "            _lark_clarify_msg_id = None",
             "            _lark_clarify_chat_id = None",
             "            _lark_clarify_sk = None",
             "        on_clarify_enter(",
@@ -631,7 +634,7 @@ def _clarify_hook(indent: str) -> str:
             "            session_key=_lark_clarify_sk,",
             "        )",
             "        try:",
-            "            return _lark_clarify_orig(question, choices, multi_select)",
+            "            return _lark_clarify_orig(*args, **kwargs)",
             "        finally:",
             "            on_clarify_exit(",
             "                message_id=_lark_clarify_msg_id,",
@@ -670,7 +673,7 @@ def _atomic_write(path: Path, content: str) -> None:
     tmp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            delete=False, dir=str(path.parent), prefix=".hermes_lark_", mode="w", encoding="utf-8"
+            delete=False, dir=str(path.parent), prefix=".hermes_lark_", mode="w", encoding="utf-8", newline=""
         ) as tmp:
             tmp_path = Path(tmp.name)
             tmp.write(content)
@@ -694,6 +697,85 @@ def _remove_block_checked(content: str, begin: str, end: str) -> str:
     return updated
 
 
+def _clean_hooks(content: str, markers: list[tuple[str, str]]) -> str:
+    for begin, end in markers:
+        content = _remove_block_checked(content, begin, end)
+    return content
+
+
+def _read_source(path: Path) -> str:
+    """Keep original line endings for backups, removal, and transaction rollback."""
+    with path.open(encoding="utf-8", newline="") as source:
+        return source.read()
+
+
+def _write_changes(changes: dict[Path, str]) -> None:
+    """Roll back earlier replacements if any file in a prepared operation fails."""
+    originals = {path: _read_source(path) if path.exists() else None for path in changes}
+    written: list[Path] = []
+    try:
+        for path, content in changes.items():
+            if originals[path] == content:
+                continue
+            if originals[path] is None:
+                # Backups are new files; source replacements retain their mode.
+                path.touch(exist_ok=False)
+            written.append(path)
+            _atomic_write(path, content)
+    except BaseException:
+        rollback_errors = []
+        for path in reversed(written):
+            try:
+                original = originals[path]
+                if original is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    _atomic_write(path, original)
+            except OSError as exc:
+                rollback_errors.append(f"{path}: {exc}")
+        if rollback_errors:
+            _logger.error("Patch rollback incomplete: %s", "; ".join(rollback_errors))
+        raise
+
+
+def install_patchers(patchers: list[Patcher | CronPatcher]) -> None:
+    """Preflight gateway and cron together before changing sources or backups."""
+    changes: dict[Path, str] = {}
+    for patcher in patchers:
+        prepared = patcher.prepare_install()
+        for path, content in prepared.items():
+            original = _read_source(path)
+            if original == content and not any(
+                marker in content for pair in patcher.MARKERS for marker in pair
+            ):
+                continue
+            clean = _clean_hooks(original, patcher.MARKERS)
+            backup = path.with_suffix(path.suffix + _BACKUP_SUFFIX)
+            # Refresh stale backups after an upstream upgrade, never restore old code over it.
+            changes[backup] = clean
+            changes[path] = content
+    _write_changes(changes)
+
+
+def _prepare_restore(paths: list[Path], markers: list[tuple[str, str]]) -> dict[Path, str]:
+    changes = {}
+    for path in paths:
+        backup = path.with_suffix(path.suffix + _BACKUP_SUFFIX)
+        if not backup.exists():
+            if any(marker in _read_source(path) for pair in markers for marker in pair):
+                raise PatcherError(f"No backup found: {backup}")
+            continue
+        content = _read_source(backup)
+        current = _clean_hooks(_read_source(path), markers)
+        if current != content:
+            raise PatcherError(f"Backup no longer matches upstream source: {backup}; use uninstall instead")
+        compile(content, str(path), "exec")
+        changes[path] = content
+    if not changes:
+        raise PatcherError("No backup found for current Hermes targets")
+    return changes
+
+
 class Patcher:
     """管理 AST 注入的安装和移除."""
 
@@ -709,22 +791,59 @@ class Patcher:
                 f"Set HERMES_HOME to the dir containing hermes-agent/ and rerun."
             )
 
+        tree = ast.parse(_clean_hooks(_read_source(self.run_path), self.MARKERS))
+        monolithic = any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_handle_message_with_agent"
+            for node in ast.walk(tree)
+        )
+        self.split = not monolithic and (self.run_path.parent / "run_turn.py").exists()
+
+    @property
+    def target_paths(self) -> list[Path]:
+        if self.split:
+            from .split_gateway import GATEWAY_FILES
+
+            return [self.run_path, *(self.run_path.parent / name for name in GATEWAY_FILES)]
+        return [self.run_path]
+
     def is_patched(self) -> bool:
-        return MK_START in self.run_path.read_text(encoding="utf-8")
+        return any(
+            marker in _read_source(path)
+            for path in self.target_paths if path.exists()
+            for pair in self.MARKERS for marker in pair
+        )
 
     def is_fully_patched(self) -> bool:
-        content = self.run_path.read_text(encoding="utf-8")
-        tree = ast.parse(content)
-        lines = content.splitlines(keepends=True)
-        answer_sites = _find_func_bodies(tree, lines, "_stream_delta_cb")
-        for begin, end in self.MARKERS:
-            expected = len(answer_sites) if begin == MK_ANSWER else 1
-            if content.count(begin) != expected or content.count(end) != expected:
-                return False
-        return True
+        try:
+            return all(
+                _read_source(path) == content
+                for path, content in self.prepare_install().items()
+            )
+        except (PatcherError, SyntaxError, OSError):
+            return False
 
     def verify_target(self) -> None:
-        content = self.run_path.read_text(encoding="utf-8")
+        self.prepare_install()
+
+    def prepare_install(self) -> dict[Path, str]:
+        changes = {}
+        for path in self.target_paths:
+            if not path.is_file():
+                raise PatcherError(f"Missing split gateway module: {path}")
+            content = _clean_hooks(_read_source(path), self.MARKERS)
+            if self.split:
+                from .split_gateway import inject_gateway
+
+                updated = content if path == self.run_path else inject_gateway(path.name, content)
+            else:
+                self._verify_legacy(content)
+                updated = self._inject_all(content)
+            compile(updated, str(path), "exec")
+            changes[path] = updated
+        return changes
+
+    def _verify_legacy(self, content: str) -> None:
         tree = ast.parse(content)
 
         handler = _find_func_body(tree, content.splitlines(keepends=True), "_handle_message_with_agent")
@@ -776,37 +895,27 @@ class Patcher:
             )
 
     def apply(self) -> None:
-        if self.is_fully_patched():
-            return
-
-        self.verify_target()
-        content = self.run_path.read_text(encoding="utf-8")
-        if any(marker in content for pair in self.MARKERS for marker in pair):
-            for begin, end in self.MARKERS:
-                content = _remove_block_checked(content, begin, end)
-        else:
-            self._backup()
-        content = self._inject_all(content)
-        _atomic_write(self.run_path, content)
+        install_patchers([self])
 
     def remove(self) -> None:
-        content = self.run_path.read_text(encoding="utf-8")
-        if not any(marker in content for pair in self.MARKERS for marker in pair):
-            return
-        for begin, end in self.MARKERS:
-            content = _remove_block_checked(content, begin, end)
-        _atomic_write(self.run_path, content)
+        _write_changes(self.prepare_remove())
+
+    def prepare_remove(self) -> dict[Path, str]:
+        changes = {}
+        for path in self.target_paths:
+            if path.exists():
+                content = _clean_hooks(_read_source(path), self.MARKERS)
+                compile(content, str(path), "exec")
+                changes[path] = content
+        return changes
 
     def restore(self) -> None:
-        backup = self.run_path.with_suffix(self.run_path.suffix + _BACKUP_SUFFIX)
-        if not backup.exists():
-            raise PatcherError(f"No backup found: {backup}")
-        shutil.copy2(backup, self.run_path)
+        _write_changes(self.prepare_restore())
 
-    def _backup(self) -> None:
-        backup = self.run_path.with_suffix(self.run_path.suffix + _BACKUP_SUFFIX)
-        if not backup.exists():
-            shutil.copy2(self.run_path, backup)
+    def prepare_restore(self) -> dict[Path, str]:
+        # A pre-upgrade run.py backup is unrelated to the new split modules.
+        paths = [path for path in self.target_paths if not self.split or path != self.run_path]
+        return _prepare_restore(paths, self.MARKERS)
 
     def _inject_all(self, content: str) -> str:
         tree = ast.parse(content)
@@ -862,6 +971,8 @@ class Patcher:
         }
         for idx, indent, fn_name in sites:
             hook = _HOOK_FNS[fn_name](indent)
+            if "\r\n" in content:
+                hook = hook.replace("\n", "\r\n")
             lines[idx:idx] = hook.splitlines(keepends=True)
 
         return "".join(lines)
@@ -1032,6 +1143,8 @@ def _safe_indent(lines: list[str], lineno: int) -> str:
 class CronPatcher:
     """注入 CRON_DELIVER hook 到 cron/scheduler.py 的 _deliver_result."""
 
+    MARKERS: ClassVar[list[tuple[str, str]]] = [(MK_CRON_DELIVER, MK_CRON_DELIVER_END)]
+
     def __init__(self, cron_path: Path | None = None) -> None:
         self.cron_path = cron_path or _default_cron_path()
         if not self.cron_path.exists():
@@ -1041,28 +1154,52 @@ class CronPatcher:
                 f"(tried: {tried}). "
                 f"Set HERMES_HOME to the dir containing hermes-agent/ and rerun."
             )
+        delivery_path = self.cron_path.with_name("scheduler_delivery.py")
+        if delivery_path.exists() and delivery_path != self.cron_path:
+            tree = ast.parse(_clean_hooks(_read_source(self.cron_path), self.MARKERS))
+            has_deliver = any(
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "_deliver_result"
+                for node in ast.walk(tree)
+            )
+            if not has_deliver:
+                self.cron_path = delivery_path
+        self.split = self.cron_path.name == "scheduler_delivery.py"
 
     def is_patched(self) -> bool:
-        return MK_CRON_DELIVER in self.cron_path.read_text(encoding="utf-8")
+        content = _read_source(self.cron_path)
+        return any(marker in content for pair in self.MARKERS for marker in pair)
+
+    def is_fully_patched(self) -> bool:
+        try:
+            return _read_source(self.cron_path) == self.prepare_install()[self.cron_path]
+        except (PatcherError, SyntaxError, OSError):
+            return False
 
     def verify_target(self) -> None:
-        content = self.cron_path.read_text(encoding="utf-8")
+        self.prepare_install()
+
+    def _verify_legacy(self, content: str) -> None:
         if "delivered = False" not in content:
             raise PatcherError("Cannot find 'delivered = False' anchor in scheduler.py")
         if "cleaned_delivery_content" not in content:
             raise PatcherError("Cannot find 'cleaned_delivery_content' in scheduler.py")
 
     def apply(self) -> None:
-        content = self.cron_path.read_text(encoding="utf-8")
-        has_markers = MK_CRON_DELIVER in content or MK_CRON_DELIVER_END in content
-        if has_markers:
-            cleaned = _remove_block_checked(content, MK_CRON_DELIVER, MK_CRON_DELIVER_END)
-            if content.count(MK_CRON_DELIVER) == 1 and content.count(MK_CRON_DELIVER_END) == 1:
-                return
-            content = cleaned
-        self.verify_target()
-        if not has_markers:
-            self._backup()
+        install_patchers([self])
+
+    def prepare_install(self) -> dict[Path, str]:
+        content = _clean_hooks(_read_source(self.cron_path), self.MARKERS)
+        if self.split:
+            from .split_cron import inject_cron
+
+            updated = inject_cron(content)
+        else:
+            self._verify_legacy(content)
+            updated = self._inject_legacy(content)
+        compile(updated, str(self.cron_path), "exec")
+        return {self.cron_path: updated}
+
+    def _inject_legacy(self, content: str) -> str:
         lines = content.splitlines(keepends=True)
 
         inject_idx = None
@@ -1075,23 +1212,21 @@ class CronPatcher:
 
         indent = _safe_indent(lines, inject_idx)
         hook = _cron_deliver_hook(indent)
+        if "\r\n" in content:
+            hook = hook.replace("\n", "\r\n")
         lines[inject_idx + 1 : inject_idx + 1] = hook.splitlines(keepends=True)
-        _atomic_write(self.cron_path, "".join(lines))
+        return "".join(lines)
 
     def remove(self) -> None:
-        content = self.cron_path.read_text(encoding="utf-8")
-        if MK_CRON_DELIVER not in content and MK_CRON_DELIVER_END not in content:
-            return
-        content = _remove_block_checked(content, MK_CRON_DELIVER, MK_CRON_DELIVER_END)
-        _atomic_write(self.cron_path, content)
+        _write_changes(self.prepare_remove())
+
+    def prepare_remove(self) -> dict[Path, str]:
+        content = _clean_hooks(_read_source(self.cron_path), self.MARKERS)
+        compile(content, str(self.cron_path), "exec")
+        return {self.cron_path: content}
 
     def restore(self) -> None:
-        backup = self.cron_path.with_suffix(self.cron_path.suffix + _BACKUP_SUFFIX)
-        if not backup.exists():
-            raise PatcherError(f"No backup found: {backup}")
-        shutil.copy2(backup, self.cron_path)
+        _write_changes(self.prepare_restore())
 
-    def _backup(self) -> None:
-        backup = self.cron_path.with_suffix(self.cron_path.suffix + _BACKUP_SUFFIX)
-        if not backup.exists():
-            shutil.copy2(self.cron_path, backup)
+    def prepare_restore(self) -> dict[Path, str]:
+        return _prepare_restore([self.cron_path], self.MARKERS)

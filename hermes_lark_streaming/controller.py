@@ -423,6 +423,7 @@ class StreamCardController(StreamingController):
         message_id: str,
         answer: str = "",
         is_error: bool = False,
+        reconcile_answer: bool = False,
         duration: float = 0.0,
         model: str = "",
         tokens: dict | None = None,
@@ -470,6 +471,7 @@ class StreamCardController(StreamingController):
         self._apply_completion_payload(
             session=session,
             answer=answer,
+            reconcile_answer=reconcile_answer,
             duration=duration,
             model=model,
             tokens=tokens,
@@ -489,7 +491,7 @@ class StreamCardController(StreamingController):
         task_name: str = "",
         run_time: str = "",
     ) -> bool:
-        """Cron 推送 — 包装为静态卡片发送，成功返回 True."""
+        """Return True when card delivery owns the text, including an uncertain timeout."""
         if not self.enabled or not content or not chat_id:
             return False
         coroutine = self._do_cron_deliver(
@@ -502,7 +504,18 @@ class StreamCardController(StreamingController):
                 except Exception:
                     coroutine.close()
                     raise
-                future.result(timeout=30)
+                try:
+                    future.result(timeout=30)
+                except TimeoutError:
+                    if future.done():
+                        # Distinguish a completed send's own TimeoutError from our wait budget.
+                        future.result()
+                    else:
+                        # Cancellation cannot retract an accepted remote send. Keep ownership
+                        # rather than racing the still-running card with a native text fallback.
+                        future.add_done_callback(self._on_bg_task_done)
+                        _logger.warning("cron card delivery pending after timeout: chat=%s", chat_id[:12])
+                        return True
             else:
                 asyncio.run(coroutine)
             _logger.info("cron card delivered: chat=%s len=%d", chat_id[:12], len(content))
@@ -654,12 +667,29 @@ class StreamCardController(StreamingController):
         model: str,
         tokens: dict | None,
         context: dict | None,
+        reconcile_answer: bool = False,
     ) -> None:
-        if answer and session.segment_state and not any(
-            seg.type == SegmentType.ANSWER for seg in session.segment_state.segments
-        ):
+        if answer and session.segment_state:
             final_answer = strip_reasoning_tags(answer)
-            if final_answer:
+            latest_answer = next(
+                (seg for seg in reversed(session.active_segments()) if seg.type == SegmentType.ANSWER),
+                None,
+            )
+            if final_answer and reconcile_answer:
+                if latest_answer is not None and final_answer.startswith(latest_answer.text):
+                    suffix = final_answer[len(latest_answer.text):]
+                    if suffix:
+                        latest_answer.text += suffix
+                        latest_answer.dirty = True
+                else:
+                    # Keep useful partial output and separate the authoritative final notice.
+                    separator = "\n\n" if session.segment_state.segments and (
+                        session.segment_state.segments[-1].type == SegmentType.ANSWER
+                    ) else ""
+                    session.segment_state.on_answer_delta(separator + final_answer)
+            elif final_answer and not any(
+                seg.type == SegmentType.ANSWER for seg in session.segment_state.segments
+            ):
                 session.segment_state.on_answer_delta(final_answer)
 
         session.footer = {

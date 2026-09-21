@@ -6,6 +6,8 @@ on:
   push:
     paths:
       - 'hermes_lark_streaming/patcher.py'
+      - 'hermes_lark_streaming/split_*.py'
+      - '.github/workflows/hermes-check.yml'
   workflow_dispatch:
 
 permissions:
@@ -18,18 +20,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Fetch Hermes sources
-        run: |
-          curl -fsSL "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/gateway/run.py" -o hermes_run.py
-          if [ ! -s hermes_run.py ]; then
-            echo "::error::Failed to fetch run.py"
-            exit 1
-          fi
-          curl -fsSL "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/cron/scheduler.py" -o hermes_scheduler.py
-          if [ ! -s hermes_scheduler.py ]; then
-            echo "::error::Failed to fetch scheduler.py"
-            exit 1
-          fi
+      - name: Fetch consistent Hermes source tree
+        uses: actions/checkout@v6
+        with:
+          repository: NousResearch/hermes-agent
+          ref: main
+          path: hermes-source
+          persist-credentials: false
+          sparse-checkout: |
+            gateway
+            cron
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -47,9 +47,9 @@ jobs:
           python -c "
           import pathlib
           from hermes_lark_streaming.patcher import Patcher, CronPatcher
-          p = Patcher(pathlib.Path('hermes_run.py'))
+          p = Patcher(pathlib.Path('hermes-source/gateway/run.py'))
           p.verify_target()
-          cp = CronPatcher(pathlib.Path('hermes_scheduler.py'))
+          cp = CronPatcher(pathlib.Path('hermes-source/cron/scheduler.py'))
           cp.verify_target()
           print('Both targets compatible.')
           " > /tmp/verify.log 2>&1
@@ -62,6 +62,7 @@ jobs:
               echo "VERIFY_EOF"
             fi
           } >> "$GITHUB_OUTPUT"
+          exit "$code"
 
       - name: Open issue on failure
         if: always() && steps.verify.outcome != 'success'
@@ -74,7 +75,7 @@ jobs:
             const title = 'Hermes compatibility check failed';
             const log = process.env.VERIFY_LOG || '(no output captured — verify step may have been skipped, e.g. upstream fetch / install failure)';
             const run = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
-            const body = `The Hermes compatibility check failed.\n\nPlease check if Hermes has updated function names or injection anchors in \`gateway/run.py\` or \`cron/scheduler.py\`.\n\n<details><summary>verify output</summary>\n\n\`\`\`\n${log}\n\`\`\`\n\n</details>\n\nWorkflow run: ${run}`;
+            const body = `The Hermes compatibility check failed.\n\nPlease check if Hermes has updated function names or injection anchors in its gateway or cron delivery modules.\n\n<details><summary>verify output</summary>\n\n\`\`\`\n${log}\n\`\`\`\n\n</details>\n\nWorkflow run: ${run}`;
 
             // Ensure label exists
             try {
