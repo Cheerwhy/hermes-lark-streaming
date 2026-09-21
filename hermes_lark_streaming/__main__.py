@@ -180,8 +180,9 @@ def _cmd_status() -> int:
     # Check config
     from .config import Config
 
-    # 【PATCH 8/30 主人修复】status 命令在子进程跑，gateway 进程里有的 env 这里没有
-    # source ~/.hermes/.env 让 _get_secret 能读到 FEISHU_APP_ID
+    # Since Hermes v0.20.6 the CLI runs in a subprocess without the gateway process's
+    # environment, so _get_secret cannot see FEISHU_APP_ID here. Source ~/.hermes/.env
+    # manually; setdefault keeps already-exported variables authoritative.
     _env_file = Path.home() / ".hermes" / ".env"
     if _env_file.exists():
         for _line in _env_file.read_text(encoding="utf-8").splitlines():
