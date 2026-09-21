@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -165,6 +166,18 @@ def _cmd_status() -> int:
 
     # Check config
     from .config import Config
+
+    # Since Hermes v0.20.6 the CLI runs in a subprocess without the gateway process's
+    # environment, so _get_secret cannot see FEISHU_APP_ID here. Source ~/.hermes/.env
+    # manually; setdefault keeps already-exported variables authoritative.
+    _env_file = Path.home() / ".hermes" / ".env"
+    if _env_file.exists():
+        for _line in _env_file.read_text(encoding="utf-8").splitlines():
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _, _v = _line.partition("=")
+            os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 
     cfg = Config()
     print(f"Config streaming.enabled: {cfg.enabled}")
