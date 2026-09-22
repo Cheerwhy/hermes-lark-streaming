@@ -8,16 +8,42 @@ from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from hermes_sources import SPLIT_LEDGER_REVISION, SPLIT_REVISION, source_at
-from test_split_gateway import context, method
+from hermes_sources import source_at
+from test_split_gateway import _event, _stub_gateway_packages, context, method
 
 from hermes_lark_streaming.patcher import MARKERS, PatcherError, _clean_hooks
 from hermes_lark_streaming.split_gateway import inject_gateway
 
 
-@pytest.fixture(params=[SPLIT_REVISION, SPLIT_LEDGER_REVISION], ids=["injected-id", "upstream-id"])
+def with_upstream_identity(source):
+    """Model the later split identity seam without adding another upstream snapshot."""
+    changes = {
+        "        next_message_id = next_channel_prompt = next_message_type = None":
+            "        next_inbound_id = None\n"
+            "        next_message_id = next_channel_prompt = next_message_type = None",
+        "            next_message_id = self._reply_anchor_for_event(pending_event)":
+            "            next_inbound_id = str(pending_event.message_id) "
+            "if getattr(pending_event, 'message_id', None) else None\n"
+            "            next_message_id = self._reply_anchor_for_event(pending_event)",
+        "event_message_id=next_message_id, channel_prompt=next_channel_prompt,":
+            "event_message_id=next_message_id, inbound_message_id=next_inbound_id, "
+            "channel_prompt=next_channel_prompt,",
+    }
+    for old, new in changes.items():
+        assert source.count(old) == 1
+        source = source.replace(old, new)
+    return source
+
+
+@pytest.fixture(scope="module", params=[False, True], ids=["0.21.1", "synthetic-upstream-id"])
 def turn_source(request):
-    return source_at("gateway/run_turn.py", request.param)
+    source = source_at("gateway/run_turn.py")
+    return with_upstream_identity(source) if request.param else source
+
+
+@pytest.fixture(scope="module")
+def generated(turn_source):
+    return {"run_turn.py": inject_gateway("run_turn.py", turn_source)}
 
 
 def test_known_identity_layouts_round_trip_without_duplicate_keywords(turn_source):
@@ -38,20 +64,21 @@ def test_known_identity_layouts_round_trip_without_duplicate_keywords(turn_sourc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("interrupted", [False, True])
-async def test_nested_followups_keep_raw_identity_separate_from_reply_anchor(turn_source, monkeypatch, interrupted):
+async def test_nested_followups_keep_raw_identity_separate_from_reply_anchor(
+    generated, monkeypatch, interrupted,
+):
     hooks = NS(on_message_started=Mock(), on_message_interrupted=Mock(), on_message_aborted=Mock(),
                on_queued_followup_result=Mock(side_effect=lambda **kw: kw["followup_result"].setdefault(
                    "_hermes_lark_completion_id", kw["message_id"])))
     monkeypatch.setitem(sys.modules, "hermes_lark_streaming.patch", hooks)
-    monkeypatch.setitem(sys.modules, "gateway.platforms.base", NS(merge_pending_message_event=Mock()))
-    monkeypatch.setitem(sys.modules, "gateway.run", NS(_preserve_queued_followup_history_offset=lambda old, new: new))
-    fn = method({"run_turn.py": inject_gateway("run_turn.py", turn_source)},
-                "run_turn.py", "_run_agent_queued_followup")
+    _stub_gateway_packages(monkeypatch)
+    fn = method(generated, "run_turn.py", "_run_agent_queued_followup")
     calls = []
     owner = NS(_MAX_INTERRUPT_DEPTH=10, _is_goal_continuation_event=lambda _: False,
                _session_key_for_source=lambda _: "session", _reply_anchor_for_event=lambda event: event.anchor,
                _prepare_profile_scoped_inbound_message_text=AsyncMock(return_value="next"),
-               _adapter_for_source=lambda _: None, _refresh_agent_cache_message_count=AsyncMock(),
+               _adapter_for_source=lambda _: None,
+               _refresh_agent_cache_message_count=AsyncMock(),
                _run_agent_deliver_first_response=AsyncMock())
 
     async def run_agent(**kwargs):
@@ -59,18 +86,16 @@ async def test_nested_followups_keep_raw_identity_separate_from_reply_anchor(tur
         if kwargs["inbound_message_id"] == "B":
             ctx = context(inbound_message_id="B", event_message_id="quote-B", session_id="sid", history=[],
                           _interrupt_depth=1, context_prompt="prompt")
-            return await fn(owner, ctx, None, "C", NS(message_id="C", anchor="quote-C"), {},
+            return await fn(owner, ctx, None, "C", _event("C", "quote-C"), {},
                             {"messages": [], "interrupted": interrupted}, None)
         return {"final_response": "C answer"}
 
     owner._run_agent = run_agent
     ctx = context(inbound_message_id="A", event_message_id="quote-A", session_id="sid", history=[],
                   _interrupt_depth=0, context_prompt="prompt")
-    result = await fn(owner, ctx, None, "B", NS(message_id="B", anchor="quote-B"), {},
+    result = await fn(owner, ctx, None, "B", _event("B", "quote-B"), {},
                       {"messages": [], "interrupted": interrupted}, None)
     assert result["_hermes_lark_completion_id"] == "C"
-    if "queued_terminal_inbound_id" in turn_source:
-        assert result["queued_terminal_inbound_id"] == "C"
     assert [(c["inbound_message_id"], c["event_message_id"]) for c in calls] == [("B", "quote-B"), ("C", "quote-C")]
     starts = hooks.on_message_interrupted if interrupted else hooks.on_message_started
     identity_key = "new_message_id" if interrupted else "message_id"
@@ -79,21 +104,20 @@ async def test_nested_followups_keep_raw_identity_separate_from_reply_anchor(tur
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("event", [None, NS(anchor="quote"), NS(message_id=None, anchor="quote"),
-                                   NS(message_id="", anchor="quote")], ids=["no-event", "missing", "none", "empty"])
-async def test_missing_inbound_identity_does_not_become_reply_anchor(turn_source, monkeypatch, event):
+@pytest.mark.parametrize("event", [None, _event(None, "quote"), _event(None, "quote", present=False),
+                                   _event("", "quote")], ids=["no-event", "missing", "none", "empty"])
+async def test_missing_inbound_identity_does_not_become_reply_anchor(generated, monkeypatch, event):
     monkeypatch.setitem(sys.modules, "hermes_lark_streaming.patch", NS(
         on_message_started=Mock(), on_message_interrupted=Mock(), on_message_aborted=Mock(),
         on_queued_followup_result=Mock(),
     ))
-    monkeypatch.setitem(sys.modules, "gateway.platforms.base", NS(merge_pending_message_event=Mock()))
-    monkeypatch.setitem(sys.modules, "gateway.run", NS(_preserve_queued_followup_history_offset=lambda old, new: new))
-    fn = method({"run_turn.py": inject_gateway("run_turn.py", turn_source)},
-                "run_turn.py", "_run_agent_queued_followup")
+    _stub_gateway_packages(monkeypatch)
+    fn = method(generated, "run_turn.py", "_run_agent_queued_followup")
     owner = NS(_MAX_INTERRUPT_DEPTH=10, _is_goal_continuation_event=lambda _: False,
                _session_key_for_source=lambda _: "session", _reply_anchor_for_event=lambda item: item.anchor,
                _prepare_profile_scoped_inbound_message_text=AsyncMock(return_value="next"),
-               _adapter_for_source=lambda _: None, _refresh_agent_cache_message_count=AsyncMock(),
+               _adapter_for_source=lambda _: None,
+               _refresh_agent_cache_message_count=AsyncMock(),
                _run_agent_deliver_first_response=AsyncMock(),
                _run_agent=AsyncMock(return_value={"final_response": "done"}))
     ctx = context(session_id="sid", history=[], _interrupt_depth=0, context_prompt="prompt")
@@ -112,7 +136,7 @@ async def test_missing_inbound_identity_does_not_become_reply_anchor(turn_source
     ("next_inbound_id = None", "next_inbound_id = None; next_inbound_id += 'unrelated'"),
 ])
 def test_unknown_identity_mapping_fails_closed(old, new):
-    source = source_at("gateway/run_turn.py", SPLIT_LEDGER_REVISION)
+    source = with_upstream_identity(source_at("gateway/run_turn.py"))
     assert old in source
     changed = source.replace(old, new)
     compile(changed, "changed_run_turn.py", "exec")

@@ -43,7 +43,7 @@
 
 ## 运行要求
 
-- Hermes `>= 0.14.0`（2026.5.16）已安装并配置飞书平台
+- Hermes `>= 0.21.1`（2026.9.7）已安装并配置飞书平台
 - `Python >= 3.11`
 - `lark-oapi >= 1.4.0` — 飞书/Lark 官方 Python SDK
 - `PyYAML >= 6.0` — YAML 解析库
@@ -179,7 +179,7 @@ $HERMES_PYTHON -m pip uninstall hermes-lark-streaming
 
 ## 工作原理
 
-插件通过 AST 注入在 `gateway/run.py` 和 `cron/scheduler.py` 插入 hook 调用，所有业务逻辑在 `hermes_lark_streaming` 包内完成。
+插件通过 AST 注入在 gateway 的 split 模块和 `cron/scheduler_delivery.py` 插入 hook 调用，所有业务逻辑在 `hermes_lark_streaming` 包内完成。
 
 **消息处理流程：**
 
@@ -207,7 +207,7 @@ $HERMES_PYTHON -m pip uninstall hermes-lark-streaming
 
 ## 注意事项
 
-- `install` 会修改 `~/.hermes/hermes-agent/gateway/run.py` 和 `cron/scheduler.py`，自动创建 `.hermes_lark.bak` 备份
+- `install` 会修改 gateway 下的 `run_inbound.py`、`run_turn.py`、`run_turn_runner.py`、`run_busy.py` 及 `cron/scheduler_delivery.py`，自动创建 `.hermes_lark.bak` 备份
 - Hermes 更新后需重新运行 `verify` + `install`
 - 插件与 Hermes 内置飞书适配器互补工作：插件负责流式卡片，内置适配器负责消息收发
 - 仅对飞书平台生效，其他平台不受影响
@@ -234,3 +234,15 @@ $HERMES_PYTHON -m pip uninstall hermes-lark-streaming
 ## 许可证
 
 [MIT](LICENSE)
+
+## 开发测试
+
+日常测试优先复用 `tests/samples/` 中已下载的 Hermes 0.21.1 源码，缺失时按固定 commit 下载并校验哈希。
+该缓存目录由 Git 忽略；缓存完整后可离线运行，测试不会修改实际 Hermes 安装。
+版本清单保留在仓库中，详情见 [样本说明](tests/HERMES_SAMPLES.md)。
+
+```bash
+~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/ -q
+# 按需验证本机新版，只操作临时副本
+~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/test_multifile_patcher.py -k installed_hermes --local-hermes -q
+```

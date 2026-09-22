@@ -43,7 +43,7 @@ When long conversations or excessive tool steps cause the card to approach Feish
 
 ## Requirements
 
-- Hermes `>= 0.14.0` (2026.5.16) with Feishu/Lark platform configured
+- Hermes `>= 0.21.1` (2026.9.7) with Feishu/Lark platform configured
 - `Python >= 3.11`
 - `lark-oapi >= 1.4.0` — Feishu/Lark official Python SDK
 - `PyYAML >= 6.0` — YAML parser
@@ -179,7 +179,7 @@ $HERMES_PYTHON -m pip uninstall hermes-lark-streaming
 
 ## How It Works
 
-The plugin injects hook calls into `gateway/run.py` and `cron/scheduler.py` via AST patching. All business logic lives in the `hermes_lark_streaming` package.
+The plugin injects hook calls into the split gateway modules and `cron/scheduler_delivery.py` via AST patching. All business logic lives in the `hermes_lark_streaming` package.
 
 **Message flow:**
 
@@ -207,7 +207,7 @@ If a message is deleted/recalled, updates are auto-terminated.
 
 ## Notes
 
-- `install` modifies `~/.hermes/hermes-agent/gateway/run.py` and `cron/scheduler.py`, and creates `.hermes_lark.bak` backups
+- `install` modifies gateway `run_inbound.py`, `run_turn.py`, `run_turn_runner.py`, `run_busy.py` and `cron/scheduler_delivery.py`, creating `.hermes_lark.bak` backups
 - Re-run `verify` + `install` after Hermes updates
 - The plugin complements the built-in Feishu adapter: plugin handles streaming cards, built-in adapter handles message routing
 - Only affects Feishu/Lark platform — other platforms are unaffected
@@ -234,3 +234,16 @@ Thanks to our contributors for their issues and pull requests:
 ## License
 
 [MIT](LICENSE)
+
+## Development tests
+
+Tests reuse verified Hermes 0.21.1 files in the Git-ignored `tests/samples/` cache,
+downloading missing files from the pinned commit. A complete cache runs offline.
+The manifest stays in Git; the installed Hermes is never changed.
+See the [fixture guide](tests/HERMES_SAMPLES.md) for provenance, checksums and updates.
+
+```bash
+~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/ -q
+# Optional smoke test of local Hermes, on a disposable copy only
+~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/test_multifile_patcher.py -k installed_hermes --local-hermes -q
+```

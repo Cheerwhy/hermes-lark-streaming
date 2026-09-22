@@ -98,7 +98,7 @@ class CardSession:
         )
 
         self.image_resolver: ImageResolver | None = None
-        self.segment_state: SegmentState | None = SegmentState()
+        self.segment_state = SegmentState()
         self.element_count: int = 0
         self.split_disabled = False
         self.split_index: int = 0
@@ -116,6 +116,4 @@ class CardSession:
         self.state = SessionState.FAILED
 
     def active_segments(self) -> list[Segment]:
-        if self.segment_state is None:
-            return []
         return self.segment_state.segments[self.split_index:]

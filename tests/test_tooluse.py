@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from unittest.mock import patch
 
 import pytest
@@ -246,7 +245,6 @@ class TestToolUseTracker:
     def test_empty_tracker(self) -> None:
         tracker = ToolUseTracker()
         assert tracker.build_display_steps() == []
-        assert tracker.elapsed_ms == 0.0
 
     def test_record_start_creates_running_step(self) -> None:
         tracker = ToolUseTracker()
@@ -323,12 +321,6 @@ class TestToolUseTracker:
         steps = tracker.build_display_steps()
         assert steps[0]["result_block"] is not None
 
-    def test_elapsed_ms_positive_after_start(self) -> None:
-        tracker = ToolUseTracker()
-        tracker.record_start("read", "f")
-        time.sleep(0.001)
-        assert tracker.elapsed_ms > 0.0
-
     def test_detail_sanitized(self) -> None:
         tracker = ToolUseTracker()
         tracker.record_start("exec", "token=secret_value")
@@ -337,7 +329,7 @@ class TestToolUseTracker:
 
     @patch("hermes_lark_streaming.streaming.tooluse.time")
     def test_step_elapsed_ms_recorded(self, mock_time: object) -> None:
-        mock_time.time.side_effect = [100.0, 100.0, 102.5]
+        mock_time.time.side_effect = [100.0, 102.5]
         tracker = ToolUseTracker()
         tracker.record_start("read", "f")
         tracker.record_end("read", output="ok")

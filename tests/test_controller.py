@@ -142,7 +142,8 @@ def test_on_message_started_ignores_missing_message_id(message_id: str | None) -
     assert ctrl._sessions == {}
 
 
-def test_on_message_started_registers_anchor_alias_and_cleanup() -> None:
+@pytest.mark.parametrize("cleanup_id", ["msg", "quoted"])
+def test_on_message_started_registers_anchor_alias_and_cleanup(cleanup_id: str) -> None:
     ctrl = StreamCardController()
     _enable(ctrl)
 
@@ -153,7 +154,7 @@ def test_on_message_started_registers_anchor_alias_and_cleanup() -> None:
     assert ctrl._sessions["quoted"] is session
     assert session.anchor_id == "quoted"
 
-    ctrl._cleanup("msg")
+    ctrl._cleanup(cleanup_id)
 
     assert "msg" not in ctrl._sessions
     assert "quoted" not in ctrl._sessions
@@ -330,19 +331,16 @@ def test_prune_stale_sessions_ignores_none_key_and_prunes_valid_key() -> None:
         flush=_DummyFlush(),
         image_resolver=None,
     )
-    valid_stale_session = SimpleNamespace(
-        created_at=time.time() - ctrl._session_ttl - 1,
-        flush=_DummyFlush(),
-        image_resolver=None,
-    )
+    valid_stale_session = _make_session("msg")
+    valid_stale_session.created_at = time.time() - ctrl._session_ttl - 1
     ctrl._sessions[None] = stale_session  # type: ignore[index,assignment]
-    ctrl._sessions["msg"] = valid_stale_session  # type: ignore[assignment]
+    ctrl._sessions["msg"] = valid_stale_session
 
     ctrl._prune_stale_sessions()
 
     assert ctrl._sessions[None] is stale_session  # type: ignore[index]
     assert "msg" not in ctrl._sessions
-    assert valid_stale_session.flush.completed
+    assert valid_stale_session.flush._completed
 
 
 @pytest.mark.asyncio
@@ -944,14 +942,6 @@ class TestDispatch:
         ctrl._sessions["msg_tool"] = session
         assert ctrl.on_tool_update(message_id="msg_tool", tool_name="read", status="started") is True
         assert session.segment_state.segments[0].type == "tool"
-
-    def test_session_without_segment_state_not_consumed(self) -> None:
-        ctrl = _setup_ctrl()
-        session = _make_session("msg_no_state")
-        session.segment_state = None
-        ctrl._sessions["msg_no_state"] = session
-        assert ctrl.on_answer(message_id="msg_no_state", text="answer text") is False
-        assert session.segment_state is None
 
     def test_message_started_consumes_delta_before_create_task_runs(self) -> None:
         ctrl = _setup_ctrl()
@@ -1837,6 +1827,23 @@ class TestDoCompleteCard:
 
 
 class TestOnThinking:
+    def test_reasoning_config_is_consistent_per_callback_and_reloads_next_time(self) -> None:
+        ctrl = _setup_ctrl()
+        session = _make_session("msg_thinking_config")
+        configs = [
+            {"display": {"platforms": {"feishu": {"show_reasoning": enabled}}}}
+            for enabled in (True, False)
+        ]
+        with patch.object(ctrl._cfg, "_reload", side_effect=configs) as reload_config, patch.object(
+            ctrl, "_schedule_flush"
+        ) as flush:
+            assert ctrl._on_thinking_segment(session, "Reasoning:\nfirst") is True
+            assert ctrl._on_thinking_segment(session, "Reasoning:\nsecond") is False
+
+        assert reload_config.call_count == 2
+        flush.assert_called_once_with(session)
+        assert session.segment_state.segments[0].text == "first"
+
     def test_splits_and_dispatches(self) -> None:
         ctrl = _setup_ctrl()
         ctrl._cfg._reload = lambda: {"display": {"platforms": {"feishu": {"show_reasoning": True}}}}  # type: ignore[assignment]
@@ -1857,14 +1864,6 @@ class TestOnThinking:
         with patch.object(ctrl, "_schedule_flush") as m:
             ctrl._on_thinking_segment(session, "")
             m.assert_not_called()
-
-    def test_none_segment_state_skips(self) -> None:
-        ctrl = _setup_ctrl()
-        session = _make_session("msg_think3")
-        session.segment_state = None
-        ctrl._sessions["msg_think3"] = session
-
-        ctrl._on_thinking_segment(session, "some text")
 
     def test_show_reasoning_false_skips_reasoning(self) -> None:
         ctrl = _setup_ctrl()

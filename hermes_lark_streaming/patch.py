@@ -166,7 +166,7 @@ def on_message_needs_text_fallback(*, ctrl: Any, message_id: str) -> bool:
 
 @_safe_hook(default_return=False)
 async def on_queued_followup_boundary(*, ctrl: Any, message_id: str, result: dict[str, Any]) -> bool:
-    """Complete the current card before Hermes drains a queued follow-up turn."""
+    """Legacy installed-hook shim; split gateways call on_message_completed_wait directly."""
     if not isinstance(result, dict) or result.get("interrupted"):
         return False
 

@@ -203,8 +203,6 @@ class StreamCardController(StreamingController):
         if session is None or session.guard.should_skip("on_thinking"):
             return False
 
-        if session.segment_state is None:
-            return False
         return self._on_thinking_segment(session, text)
 
     def on_reasoning(self, *, message_id: str, text: str) -> bool:
@@ -215,9 +213,6 @@ class StreamCardController(StreamingController):
             return False
         session = self._get_active_session(message_id)
         if session is None or session.guard.should_skip("on_reasoning"):
-            return False
-
-        if session.segment_state is None:
             return False
 
         session.segment_state.on_reasoning_delta(text)
@@ -237,8 +232,6 @@ class StreamCardController(StreamingController):
             return False
         session = self._get_active_session(message_id)
         if session is None or session.guard.should_skip("on_tool_update"):
-            return False
-        if session.segment_state is None:
             return False
 
         if status in ("running", "started", "tool.started"):
@@ -296,8 +289,6 @@ class StreamCardController(StreamingController):
             return False
         session = self._get_active_session(message_id)
         if session is None or session.guard.should_skip("on_answer"):
-            return False
-        if session.segment_state is None:
             return False
 
         answer_text = strip_reasoning_tags(text)
@@ -583,21 +574,9 @@ class StreamCardController(StreamingController):
                 _logger.debug("background review sender failed", exc_info=True)
 
     def _cleanup(self, message_id: str) -> None:
-        session = self._sessions.pop(message_id, None)
-        if session is None:
-            return
-        anchor = getattr(session, "anchor_id", None)
-        if anchor and self._sessions.get(anchor) is session:
-            del self._sessions[anchor]
-        session_key = getattr(session, "session_key", None)
-        if session_key and self._session_keys.get(session_key) is session:
-            del self._session_keys[session_key]
-        stale_keys = [k for k, v in self._interrupt_map.items() if v == message_id]
-        for k in stale_keys:
-            del self._interrupt_map[k]
-        session.flush.mark_completed()
-        if session.image_resolver:
-            session.image_resolver.cancel_pending()
+        session = self._sessions.get(message_id)
+        if session is not None:
+            self._cleanup_session(session)
 
     def _cleanup_session(self, session: CardSession) -> None:
         if self._sessions.get(session.message_id) is session:
@@ -669,7 +648,7 @@ class StreamCardController(StreamingController):
         context: dict | None,
         reconcile_answer: bool = False,
     ) -> None:
-        if answer and session.segment_state:
+        if answer:
             final_answer = strip_reasoning_tags(answer)
             latest_answer = next(
                 (seg for seg in reversed(session.active_segments()) if seg.type == SegmentType.ANSWER),

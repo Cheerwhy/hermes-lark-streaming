@@ -295,9 +295,9 @@ class TestSetCardMessageReady:
     @pytest.mark.asyncio
     async def test_initializes_timestamp(self) -> None:
         ctrl = _make_async()
-        assert ctrl.last_update_time == 0.0
+        assert ctrl._last_update_time == 0.0
         ctrl.set_card_message_ready(True)
-        assert ctrl.last_update_time > 0.0
+        assert ctrl._last_update_time > 0.0
 
 
 class TestFlushException:
@@ -321,13 +321,13 @@ class TestFlushException:
     async def test_exception_still_updates_timestamp(self) -> None:
         ctrl = _make_async()
         ctrl.set_card_message_ready(True)
-        before = ctrl.last_update_time
+        before = ctrl._last_update_time
 
         async def failing_flush() -> None:
             raise RuntimeError("test")
 
         await ctrl._do_flush(failing_flush)
-        assert ctrl.last_update_time >= before
+        assert ctrl._last_update_time >= before
 
 
 class TestSetThrottle:
