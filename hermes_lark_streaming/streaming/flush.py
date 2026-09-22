@@ -85,6 +85,11 @@ class FlushController:
                 r.set_result(None)
         self._flush_resolvers.clear()
 
+    def request_reflush(self) -> None:
+        """Run one more serialized flush after the current flush completes."""
+        if not self._completed:
+            self._needs_reflush = True
+
     def set_throttle(self, ms: float) -> None:
         self._throttle_ms = ms
 

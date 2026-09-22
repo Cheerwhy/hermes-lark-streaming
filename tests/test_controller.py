@@ -1500,8 +1500,68 @@ class TestDoFlush:
         # 重建后 element_count = 当前 tool steps（2 个）的新估算值，无重复计数
         expected = estimate_segment_elements(tool_seg, session.tool_use.build_display_steps())
         assert session.element_count == expected
-        # 两次 batch_update 调用：第一次失败，第二次成功（非死循环重试 N 次）
+        # 失败的 sequence 不提交，第二次使用同一个服务端期望值。
         assert client.cardkit_batch_update.await_count == 2
+        assert [call.kwargs["sequence"] for call in client.cardkit_batch_update.await_args_list] == [2, 2]
+        assert session.sequence == 2
+
+    @pytest.mark.asyncio
+    async def test_missing_loading_anchor_reseeds_once_and_reflushes(self) -> None:
+        ctrl = _setup_ctrl()
+        client = ctrl._client
+        session = _make_session("msg_anchor")
+        session.state = SessionState.STREAMING
+        session.card_id = "card_anchor"
+        session.card_msg_id = "msg_anchor_card"
+        session.segment_state.on_answer_delta("answer")
+        ctrl._sessions[session.message_id] = session
+        client.cardkit_batch_update = AsyncMock(
+            side_effect=[
+                FeishuAPIError(
+                    "cardkit_batch_update: code=300315, msg=ErrMsg: not find elementID : loading_icon;",
+                    300315,
+                ),
+                None,
+            ]
+        )
+
+        await ctrl._do_flush(session)
+
+        answer = session.segment_state.segments[0]
+        assert session.anchor_recovery_attempts == 1
+        assert session.sequence == 2
+        assert session.element_count == 1
+        assert answer.created is False
+        assert answer.dirty is True
+        assert session.flush._needs_reflush is True
+        client.cardkit_update.assert_awaited_once()
+        assert client.cardkit_update.await_args.kwargs["sequence"] == 2
+
+        await ctrl._do_flush(session)
+
+        assert answer.created is True
+        assert session.sequence == 4
+        assert client.cardkit_batch_update.await_args.kwargs["sequence"] == 3
+        assert client.cardkit_stream_element.await_args.kwargs["sequence"] == 4
+
+    @pytest.mark.asyncio
+    async def test_stream_failure_does_not_advance_sequence(self) -> None:
+        ctrl = _setup_ctrl()
+        session = _make_session("msg_stream_seq")
+        session.state = SessionState.STREAMING
+        session.card_id = "card_stream_seq"
+        session.sequence = 9
+        session.segment_state.on_answer_delta("answer")
+        answer = session.segment_state.segments[0]
+        answer.created = True
+        ctrl._sessions[session.message_id] = session
+        ctrl._client.cardkit_stream_element = AsyncMock(side_effect=RuntimeError("transient"))
+
+        await ctrl._do_flush(session)
+
+        assert session.sequence == 9
+        assert answer.dirty is True
+        assert ctrl._client.cardkit_stream_element.await_args.kwargs["sequence"] == 10
 
     @pytest.mark.asyncio
     async def test_reasoning_finalized_snapshot(self) -> None:
@@ -1747,7 +1807,13 @@ class TestDoCompleteCard:
                 raise FeishuAPIError("conflict", code=300317)
             return await original_update(*args, **kwargs)
 
-        client.cardkit_update = flaky_update
+        update_sequences: list[int] = []
+
+        async def tracked_flaky_update(*args: object, **kwargs: object) -> None:
+            update_sequences.append(int(kwargs["sequence"]))
+            return await flaky_update(*args, **kwargs)
+
+        client.cardkit_update = tracked_flaky_update
 
         session = _make_session("msg_retry")
         session.state = SessionState.STREAMING
@@ -1758,6 +1824,28 @@ class TestDoCompleteCard:
         assert await ctrl._do_complete_card(session) is True
         assert client.cardkit_close_streaming.call_count == 1
         assert call_count == 2
+        assert update_sequences == [3, 3]
+        assert session.sequence == 3
+
+    @pytest.mark.asyncio
+    async def test_close_retry_reuses_uncommitted_sequence(self) -> None:
+        ctrl = _setup_ctrl()
+        client = ctrl._client
+        client.cardkit_close_streaming = AsyncMock(
+            side_effect=[FeishuAPIError("sequence conflict", code=300317), None]
+        )
+        session = _make_session("msg_close_retry")
+        session.state = SessionState.STREAMING
+        session.card_id = "card_close_retry"
+        session.card_msg_id = "msg_close_retry_reply"
+        ctrl._sessions[session.message_id] = session
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            assert await ctrl._do_complete_card(session) is True
+
+        assert [call.kwargs["sequence"] for call in client.cardkit_close_streaming.await_args_list] == [2, 2]
+        assert client.cardkit_update.await_args.kwargs["sequence"] == 3
+        assert session.sequence == 3
 
     @pytest.mark.asyncio
     async def test_three_retries_exhausted(self) -> None:

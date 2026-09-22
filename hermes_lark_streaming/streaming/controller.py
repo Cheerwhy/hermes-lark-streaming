@@ -7,7 +7,13 @@ import logging
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
-from ..cardkit.builder import build_background_card, build_complete_card, build_cron_card, build_streaming_card_v2
+from ..cardkit.builder import (
+    _LOADING_ELEMENT_ID,
+    build_background_card,
+    build_complete_card,
+    build_cron_card,
+    build_streaming_card_v2,
+)
 from ..cardkit.markdown import (
     _downgrade_tables,
     optimize_markdown_style,
@@ -301,38 +307,40 @@ class StreamingController:
             try:
                 if seg.type == SegmentType.REASONING:
                     content = optimize_markdown_style(seg.text) or " "
-                    session.sequence += 1
+                    next_sequence = session.sequence + 1
                     _logger.info(
                         "CardKit stream element: msg=%s seq=%d type=reasoning len=%d",
                         session.message_id[:12],
-                        session.sequence,
+                        next_sequence,
                         len(content),
                     )
                     await self._client.cardkit_stream_element(
                         session.card_id,
                         seg.text_el_id,
                         content,
-                        sequence=session.sequence,
+                        sequence=next_sequence,
                     )
+                    session.sequence = next_sequence
                     seg.dirty = False
                 elif seg.type == SegmentType.ANSWER:
                     content = seg.text
                     if session.image_resolver:
                         content = session.image_resolver.resolve_images(content)
                     content = _downgrade_tables(optimize_markdown_style(content)) or " "
-                    session.sequence += 1
+                    next_sequence = session.sequence + 1
                     _logger.info(
                         "CardKit stream element: msg=%s seq=%d type=answer len=%d",
                         session.message_id[:12],
-                        session.sequence,
+                        next_sequence,
                         len(content),
                     )
                     await self._client.cardkit_stream_element(
                         session.card_id,
                         seg.el_id,
                         content,
-                        sequence=session.sequence,
+                        sequence=next_sequence,
                     )
+                    session.sequence = next_sequence
                     seg.dirty = False
             except Exception as e:
                 _logger.debug("CardKit stream element failed: %s el=%s", e, seg.el_id, exc_info=True)
@@ -349,12 +357,12 @@ class StreamingController:
         """执行 batch_update 并处理快照/标记。返回 False 表示失败."""
         assert self._client is not None
         assert session.card_id is not None
-        session.sequence += 1
+        next_sequence = session.sequence + 1
         _logger.info(
             "CardKit batch update: msg=%s card=%s seq=%d actions=%d split=%d elements=%d",
             session.message_id[:12],
             session.card_id[:12],
-            session.sequence,
+            next_sequence,
             len(actions),
             session.split_index,
             session.element_count,
@@ -374,8 +382,9 @@ class StreamingController:
             await self._client.cardkit_batch_update(
                 session.card_id,
                 actions,
-                sequence=session.sequence,
+                sequence=next_sequence,
             )
+            session.sequence = next_sequence
             for seg in segments:
                 if seg.el_id in new_el_ids:
                     seg.created = True
@@ -412,7 +421,7 @@ class StreamingController:
                 "missing=%s missing_state=%s new=[%s] tool_updates=[%s] %s",
                 e,
                 session.card_id[:12],
-                session.sequence,
+                next_sequence,
                 session.split_index,
                 session.element_count,
                 missing_el_id or "-",
@@ -424,7 +433,44 @@ class StreamingController:
             )
             # 缺失元素（300313）时回滚 stale segment：本地 created=True 但卡片上不存在，
             # 下一轮 flush 会用 add_elements 重建该元素，避免反复 partial_update 死循环。
-            if missing_el_id:
+            if missing_el_id == _LOADING_ELEMENT_ID:
+                if session.anchor_recovery_attempts < 1:
+                    session.anchor_recovery_attempts += 1
+                    try:
+                        recovery_sequence = session.sequence + 1
+                        recovery_card = build_streaming_card_v2(
+                            header_enabled=self._cfg.header_enabled,
+                            width_mode=self._cfg.width_mode,
+                        )
+                        await self._client.cardkit_update(
+                            session.card_id, recovery_card, sequence=recovery_sequence
+                        )
+                        session.sequence = recovery_sequence
+                        session.element_count = 1
+                        for seg in segments[session.split_index:]:
+                            seg.created = False
+                            seg.dirty = True
+                            seg.element_estimate = 0
+                            seg.reasoning_finalized = False
+                        session.flush.request_reflush()
+                        _logger.info(
+                            "CardKit restored missing loading anchor: card=%s seq=%d",
+                            session.card_id[:12],
+                            recovery_sequence,
+                        )
+                    except Exception:
+                        _logger.exception(
+                            "CardKit loading anchor recovery failed: card=%s",
+                            session.card_id[:12],
+                        )
+                        session.mark_failed()
+                else:
+                    _logger.error(
+                        "CardKit loading anchor missing after bounded recovery: card=%s",
+                        session.card_id[:12],
+                    )
+                    session.mark_failed()
+            elif missing_el_id:
                 for seg in segments[session.split_index:]:
                     if seg.el_id == missing_el_id and seg.created:
                         seg.created = False
@@ -743,18 +789,20 @@ class StreamingController:
                 assert self._client is not None
                 if session.card_id:
                     if not streaming_closed:
-                        session.sequence += 1
+                        next_sequence = session.sequence + 1
                         await self._client.cardkit_close_streaming(
                             session.card_id,
-                            sequence=session.sequence,
+                            sequence=next_sequence,
                         )
+                        session.sequence = next_sequence
                         streaming_closed = True
-                    session.sequence += 1
+                    next_sequence = session.sequence + 1
                     await self._client.cardkit_update(
                         session.card_id,
                         card,
-                        sequence=session.sequence,
+                        sequence=next_sequence,
                     )
+                    session.sequence = next_sequence
                 session.state = SessionState.COMPLETED
                 return True
             except FeishuAPIError as e:

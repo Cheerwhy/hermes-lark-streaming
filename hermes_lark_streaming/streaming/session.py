@@ -43,6 +43,7 @@ class CardSession:
     __slots__ = (
         "_loop",
         "anchor_id",
+        "anchor_recovery_attempts",
         "card_id",
         "card_msg_id",
         "chat_id",
@@ -75,6 +76,7 @@ class CardSession:
     ) -> None:
         self.message_id = message_id
         self.anchor_id: str | None = None
+        self.anchor_recovery_attempts = 0
         self.chat_id = chat_id
         self.session_key: str | None = None
         self.create_task: asyncio.Future[Any] | ConcurrentFuture | None = None
