@@ -2033,6 +2033,147 @@ class TestCronDeliver:
         finally:
             loop.call_soon_threadsafe(loop.stop)
 
+    def test_delivers_hook_media_after_card(self, tmp_path) -> None:
+        """Hermes 在钩子之前就把 MEDIA 标签剥进 media_files，插件必须自己把附件补上."""
+        chart = tmp_path / "curve.png"
+        chart.write_bytes(b"png-bytes")
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_card"
+        mock_client.upload_local_image.return_value = "img_key_1"
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert (
+                ctrl.on_cron_deliver(
+                    chat_id="c1",
+                    content="价格跌到 1230 了",
+                    loop=loop,
+                    media_files=[(str(chart), False)],
+                )
+                is True
+            )
+        finally:
+            if not loop.is_closed():
+                loop.close()
+
+        card = mock_client.send_card_to_chat.call_args[0][1]
+        body = card["body"]["elements"][0]["content"]
+        assert "价格跌到 1230 了" in body
+        assert "MEDIA:" not in body
+        # 图片走 image 消息内联显示，不是文件卡片。
+        mock_client.upload_local_image.assert_awaited_once_with(str(chart))
+        assert mock_client.send_image_to_chat.call_args[0][:2] == ("c1", "img_key_1")
+        assert mock_client.send_image_to_chat.call_args[1]["reply_to_message_id"] == "msg_card"
+        mock_client.upload_file.assert_not_awaited()
+
+    def test_delivers_hook_non_image_as_file(self, tmp_path) -> None:
+        report = tmp_path / "digest.md"
+        report.write_text("日报", encoding="utf-8")
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_card"
+        mock_client.upload_file.return_value = "file_key_1"
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert (
+                ctrl.on_cron_deliver(
+                    chat_id="c1", content="日报好了", loop=loop, media_files=[(str(report), False)]
+                )
+                is True
+            )
+        finally:
+            if not loop.is_closed():
+                loop.close()
+
+        mock_client.upload_local_image.assert_not_awaited()
+        mock_client.upload_file.assert_awaited_once_with(str(report), file_type="stream")
+        assert mock_client.send_file_to_chat.call_args[0][:2] == ("c1", "file_key_1")
+
+    def test_card_only_when_hook_media_is_absent(self) -> None:
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_card"
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert ctrl.on_cron_deliver(chat_id="c1", content="hello", loop=loop) is True
+        finally:
+            if not loop.is_closed():
+                loop.close()
+
+        mock_client.upload_local_image.assert_not_awaited()
+        mock_client.upload_file.assert_not_awaited()
+        mock_client.send_image_to_chat.assert_not_awaited()
+        mock_client.send_file_to_chat.assert_not_awaited()
+
+    def test_media_delivery_failure_does_not_fail_the_card(self, tmp_path) -> None:
+        chart = tmp_path / "curve.png"
+        chart.write_bytes(b"png-bytes")
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_card"
+        mock_client.upload_local_image.side_effect = RuntimeError("upload boom")
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert (
+                ctrl.on_cron_deliver(
+                    chat_id="c1", content="text", loop=loop, media_files=[(str(chart), False)]
+                )
+                is True
+            )
+        finally:
+            if not loop.is_closed():
+                loop.close()
+
+        mock_client.send_card_to_chat.assert_called_once()
+        mock_client.send_image_to_chat.assert_not_awaited()
+
+    def test_undeliverable_hook_media_is_skipped(self) -> None:
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        mock_client = AsyncMock()
+        mock_client.send_card_to_chat.return_value = "msg_card"
+        ctrl._client = mock_client
+        ctrl._initialized = True
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert (
+                ctrl.on_cron_deliver(
+                    chat_id="c1",
+                    content="text",
+                    loop=loop,
+                    media_files=[("/tmp/does-not-exist-hermes.png", False)],
+                )
+                is True
+            )
+        finally:
+            if not loop.is_closed():
+                loop.close()
+
+        mock_client.upload_local_image.assert_not_awaited()
+        mock_client.upload_file.assert_not_awaited()
+
 
 class TestBackgroundDeliver:
     @pytest.mark.asyncio
@@ -2083,3 +2224,105 @@ class TestBackgroundDeliver:
         assert result is False
         mock_client.upload_image.assert_not_called()
         mock_client.send_card_to_chat.assert_not_called()
+
+
+def _streaming_session(ctrl: StreamCardController, msg_id: str, chat_id: str = "chat_media") -> CardSession:
+    session = CardSession(msg_id, chat_id, asyncio.get_running_loop())
+    session.state = SessionState.STREAMING
+    session.segment_state = SegmentState()
+    session.card_id = f"card_{msg_id}"
+    session.card_msg_id = f"card_msg_{msg_id}"
+    ctrl._sessions[msg_id] = session
+    return session
+
+
+class TestStreamedMediaDelivery:
+    """卡片收尾后补投 MEDIA 附件 — 网关只从 final_response 扫描，见 streaming/media.py."""
+
+    @pytest.mark.asyncio
+    async def test_delivers_media_missing_from_gateway_text(self, tmp_path) -> None:
+        ctrl = _setup_ctrl()
+        session = _streaming_session(ctrl, "msg_media")
+        draft = tmp_path / "draft.md"
+        draft.write_text("草稿", encoding="utf-8")
+        session.record_raw_answer(f"草稿写好了。\nMEDIA:{draft}\n")
+
+        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
+            assert await ctrl.on_completed_wait(message_id="msg_media", answer="") is True
+
+        ctrl._client.upload_file.assert_awaited_once()
+        assert ctrl._client.upload_file.await_args.args[0] == str(draft)
+        ctrl._client.send_file_to_chat.assert_awaited_once()
+        assert ctrl._client.send_file_to_chat.await_args.args[0] == "chat_media"
+
+    @pytest.mark.asyncio
+    async def test_skips_media_the_gateway_will_deliver(self, tmp_path) -> None:
+        ctrl = _setup_ctrl()
+        session = _streaming_session(ctrl, "msg_gateway")
+        draft = tmp_path / "draft.md"
+        draft.write_text("草稿", encoding="utf-8")
+        text = f"MEDIA:{draft}"
+        session.record_raw_answer(text)
+
+        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
+            assert await ctrl.on_completed_wait(message_id="msg_gateway", answer=text) is True
+
+        ctrl._client.upload_file.assert_not_awaited()
+        ctrl._client.send_file_to_chat.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deliver_all_media_flag_takes_over(self, tmp_path) -> None:
+        ctrl = _setup_ctrl()
+        session = _streaming_session(ctrl, "msg_followup")
+        draft = tmp_path / "draft.md"
+        draft.write_text("草稿", encoding="utf-8")
+        text = f"MEDIA:{draft}"
+        session.record_raw_answer(text)
+
+        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
+            assert await ctrl.on_completed_wait(
+                message_id="msg_followup", answer=text, deliver_all_media=True,
+            ) is True
+
+        ctrl._client.upload_file.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_failed_turn_delivers_media_itself(self, tmp_path) -> None:
+        ctrl = _setup_ctrl()
+        session = _streaming_session(ctrl, "msg_err")
+        draft = tmp_path / "draft.md"
+        draft.write_text("草稿", encoding="utf-8")
+        session.record_raw_answer(f"MEDIA:{draft}")
+
+        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
+            # 失败分支里注入代码会清空 response，网关拿不到 MEDIA 指令。
+            assert await ctrl.on_completed_wait(
+                message_id="msg_err", answer=f"MEDIA:{draft}", is_error=True,
+            ) is True
+
+        ctrl._client.upload_file.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_upload_failure_keeps_completion_result(self, tmp_path) -> None:
+        ctrl = _setup_ctrl()
+        session = _streaming_session(ctrl, "msg_upfail")
+        draft = tmp_path / "draft.md"
+        draft.write_text("草稿", encoding="utf-8")
+        session.record_raw_answer(f"MEDIA:{draft}")
+        ctrl._client.upload_file = AsyncMock(return_value=None)
+
+        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
+            assert await ctrl.on_completed_wait(message_id="msg_upfail", answer="") is True
+
+        ctrl._client.send_file_to_chat.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_media_no_client_calls(self) -> None:
+        ctrl = _setup_ctrl()
+        session = _streaming_session(ctrl, "msg_plain")
+        session.record_raw_answer("就是一条普通回复。")
+
+        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
+            assert await ctrl.on_completed_wait(message_id="msg_plain", answer="就是一条普通回复。") is True
+
+        ctrl._client.upload_file.assert_not_awaited()

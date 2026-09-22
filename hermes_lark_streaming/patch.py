@@ -142,8 +142,12 @@ async def on_message_completed_wait(
     model: str = "",
     tokens: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
+    deliver_all_media: bool = False,
 ) -> bool:
-    """[注入点 2] return 前 — message.completed，等待卡片完成收尾."""
+    """[注入点 2] return 前 — message.completed，等待卡片完成收尾.
+
+    ``deliver_all_media`` — 调用方随后会清空 ``final_response`` 时置 True，让插件接管 MEDIA 附件.
+    """
     return bool(
         await ctrl.on_completed_wait(
             message_id=message_id,
@@ -154,6 +158,7 @@ async def on_message_completed_wait(
             model=model,
             tokens=tokens,
             context=context,
+            deliver_all_media=deliver_all_media,
         )
     )
 
@@ -185,6 +190,8 @@ async def on_queued_followup_boundary(*, ctrl: Any, message_id: str, result: dic
                 "used_tokens": result.get("last_prompt_tokens", 0),
                 "max_tokens": result.get("context_length", 0),
             },
+            # 下面会清空 final_response，网关将无从扫描 MEDIA 指令 → 附件交给插件投递。
+            deliver_all_media=True,
         )
     )
     if sent:
@@ -299,15 +306,21 @@ def on_cron_deliver(
     loop: Any = None,
     task_name: str = "",
     run_time: str = "",
+    media_files: object = None,
 ) -> bool:
-    """[注入点 10] cron 推送 — 包装为飞书卡片发送."""
+    """[注入点 10] cron 推送 — 包装为飞书卡片发送.
+
+    ``media_files`` 由注入钩子从 Hermes 的投递循环里透传（``[(path, is_voice), ...]``）：
+    Hermes 在调用本钩子前就把 ``MEDIA:`` 标签从正文剥走，钩子返回 True 又会跳过它自己的
+    附件投递，所以附件必须由插件补投。
+    """
     try:
         ctrl = get_controller()
         if not ctrl.enabled:
             return False
         return bool(ctrl.on_cron_deliver(
             chat_id=chat_id, content=content, loop=loop,
-            task_name=task_name, run_time=run_time,
+            task_name=task_name, run_time=run_time, media_files=media_files,
         ))
     except Exception as exc:
         _logger.warning("on_cron_deliver error: %s", exc, exc_info=True)

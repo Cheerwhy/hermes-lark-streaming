@@ -9,6 +9,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -28,6 +29,8 @@ from lark_oapi.api.cardkit.v1 import (
     UpdateCardRequestBody,
 )
 from lark_oapi.api.im.v1 import (
+    CreateFileRequest,
+    CreateFileRequestBody,
     CreateImageRequest,
     CreateImageRequestBody,
     CreateMessageRequest,
@@ -207,6 +210,55 @@ class FeishuClient:
             return str(resp.data.message_id)
         raise FeishuAPIError("send_card_to_chat: response missing message_id")
 
+    async def send_file_to_chat(
+        self,
+        chat_id: str,
+        file_key: str,
+        *,
+        reply_to_message_id: str | None = None,
+    ) -> str:
+        """发送 file 消息（附件）到聊天，返回 message_id."""
+        request_uuid = uuid.uuid4().hex
+        content = self._dumps({"file_key": file_key})
+        if reply_to_message_id:
+            request = (
+                ReplyMessageRequest.builder()
+                .message_id(reply_to_message_id)
+                .request_body(
+                    ReplyMessageRequestBody.builder()
+                    .msg_type("file")
+                    .content(content)
+                    .uuid(request_uuid)
+                    .build()
+                )
+                .build()
+            )
+            resp = await self._checked_call(
+                "send_file_to_chat",
+                lambda: self._client.im.v1.message.areply(request),
+            )
+        else:
+            request = (
+                CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(chat_id)
+                    .msg_type("file")
+                    .content(content)
+                    .uuid(request_uuid)
+                    .build()
+                )
+                .build()
+            )
+            resp = await self._checked_call(
+                "send_file_to_chat",
+                lambda: self._client.im.v1.message.acreate(request),
+            )
+        if resp.data and resp.data.message_id:
+            return str(resp.data.message_id)
+        raise FeishuAPIError("send_file_to_chat: response missing message_id")
+
     async def reply_card_by_id(self, message_id: str, card_id: str) -> str:
         """通过 card_id 回复 CardKit 卡片消息，返回 message_id."""
         request_uuid = uuid.uuid4().hex
@@ -336,6 +388,116 @@ class FeishuClient:
         if resp.success() and resp.data and resp.data.image_key:
             return str(resp.data.image_key)
         return None
+
+    async def upload_file(self, file_path: str, *, file_type: str = "stream") -> str | None:
+        """上传本地文件到飞书，返回 file_key（失败返回 None）.
+
+        ``file_type`` 取 ``stream``/``mp4``/``opus``/``pdf``/``doc``/``xls``/``ppt``，
+        与 Hermes 的附件路由一致，决定飞书端的预览方式。
+        """
+        path = Path(file_path)
+        try:
+            with path.open("rb") as handle:
+                request = (
+                    CreateFileRequest.builder()
+                    .request_body(
+                        CreateFileRequestBody.builder()
+                        .file_type(file_type)
+                        .file_name(path.name)
+                        .file(handle)
+                        .build()
+                    )
+                    .build()
+                )
+                resp = await self._client.im.v1.file.acreate(request)
+        except Exception:
+            _logger.warning("file upload failed: %s", path.name, exc_info=True)
+            return None
+        if resp.success() and resp.data and resp.data.file_key:
+            return str(resp.data.file_key)
+        _logger.warning(
+            "file upload rejected: %s code=%s", path.name, getattr(resp, "code", 0),
+        )
+        return None
+
+    async def upload_local_image(self, image_path: str) -> str | None:
+        """上传本地图片到飞书，返回 image_key（失败返回 None）.
+
+        与 ``upload_file`` 的区别是走 ``im/v1/images``：``image_key`` 只能由 ``msg_type=image``
+        发送，聊天里内联显示；``file_key`` 发出去是文件卡片。
+        """
+        image = Path(image_path)
+        try:
+            with image.open("rb") as handle:
+                request = (
+                    CreateImageRequest.builder()
+                    .request_body(
+                        CreateImageRequestBody.builder()
+                        .image_type("message")
+                        .image(handle)
+                        .build()
+                    )
+                    .build()
+                )
+                resp = await self._client.im.v1.image.acreate(request)
+        except Exception:
+            _logger.warning("image upload failed: %s", image.name, exc_info=True)
+            return None
+        if resp.success() and resp.data and resp.data.image_key:
+            return str(resp.data.image_key)
+        _logger.warning(
+            "image upload rejected: %s code=%s", image.name, getattr(resp, "code", 0),
+        )
+        return None
+
+    async def send_image_to_chat(
+        self,
+        chat_id: str,
+        image_key: str,
+        *,
+        reply_to_message_id: str | None = None,
+    ) -> str:
+        """发送 image 消息（聊天内联显示图片）到聊天，返回 message_id."""
+        request_uuid = uuid.uuid4().hex
+        content = self._dumps({"image_key": image_key})
+        if reply_to_message_id:
+            request = (
+                ReplyMessageRequest.builder()
+                .message_id(reply_to_message_id)
+                .request_body(
+                    ReplyMessageRequestBody.builder()
+                    .msg_type("image")
+                    .content(content)
+                    .uuid(request_uuid)
+                    .build()
+                )
+                .build()
+            )
+            resp = await self._checked_call(
+                "send_image_to_chat",
+                lambda: self._client.im.v1.message.areply(request),
+            )
+        else:
+            request = (
+                CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(chat_id)
+                    .msg_type("image")
+                    .content(content)
+                    .uuid(request_uuid)
+                    .build()
+                )
+                .build()
+            )
+            resp = await self._checked_call(
+                "send_image_to_chat",
+                lambda: self._client.im.v1.message.acreate(request),
+            )
+        if resp.data and resp.data.message_id:
+            return str(resp.data.message_id)
+        raise FeishuAPIError("send_image_to_chat: response missing message_id")
 
     @staticmethod
     def _download_image(url: str, timeout: int = 15) -> bytes | None:

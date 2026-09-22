@@ -22,6 +22,7 @@ from ..feishu import (
 from .diagnostics import compact_ids, extract_missing_element_id, segment_state_for_log, summarize_actions
 from .flush import CARDKIT_MS
 from .image import ImageResolver
+from .media import deliver_media_files, hook_media_paths, strip_media_directives
 from .segment_helper import (
     ELEMENT_THRESHOLD,
     FOOTER_RESERVE,
@@ -61,6 +62,13 @@ async def _resolve_answer_images(
             seg.text = await resolver.resolve_await(seg.text)
         except Exception:
             _logger.debug("%s image resolve failed: el=%s", log_prefix, seg.el_id, exc_info=True)
+
+
+def _strip_answer_media_directives(segments: list[Segment]) -> None:
+    """卡片正文里去掉 ``MEDIA:`` 指令 — 附件由 media 模块/网关投递，正文不该出现路径."""
+    for seg in segments:
+        if seg.type == SegmentType.ANSWER and seg.text:
+            seg.text = strip_media_directives(seg.text)
 
 
 class StreamingController:
@@ -325,7 +333,7 @@ class StreamingController:
                     )
                     seg.dirty = False
                 elif seg.type == SegmentType.ANSWER:
-                    content = seg.text
+                    content = strip_media_directives(seg.text)
                     if session.image_resolver:
                         content = session.image_resolver.resolve_images(content)
                     content = _downgrade_tables(optimize_markdown_style(content)) or " "
@@ -520,6 +528,7 @@ class StreamingController:
         old_card_id = card_id or session.card_id
         if not old_card_id:
             return
+        _strip_answer_media_directives(seal_segments)
         if session.image_resolver:
             await _resolve_answer_images(
                 seal_segments,
@@ -728,6 +737,7 @@ class StreamingController:
 
         active_segments = session.active_segments()
 
+        _strip_answer_media_directives(active_segments)
         if session.image_resolver:
             await _resolve_answer_images(
                 active_segments,
@@ -810,12 +820,54 @@ class StreamingController:
         return False
 
     async def _do_cron_deliver(
-        self, chat_id: str, content: str, *, task_name: str = "", run_time: str = ""
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        task_name: str = "",
+        run_time: str = "",
+        media_files: object = None,
     ) -> None:
         await self._ensure_init()
         assert self._client is not None
-        card = build_cron_card(content, task_name=task_name, run_time=run_time)
-        await self._client.send_card_to_chat(chat_id, card)
+        # Hermes 的 cron 投递在调用注入钩子之前就把 MEDIA 标签剥进 media_files 了
+        # (cron/scheduler_delivery.py)，钩子返回 True 会跳过它自己的附件投递 —— 所以这里自己补。
+        paths = hook_media_paths(media_files)
+        card = build_cron_card(
+            strip_media_directives(content) if paths else content,
+            task_name=task_name,
+            run_time=run_time,
+        )
+        message_id = await self._client.send_card_to_chat(chat_id, card)
+        await self._deliver_card_media(chat_id, paths, reply_to_message_id=message_id)
+
+    async def _deliver_card_media(
+        self,
+        chat_id: str,
+        paths: list[str],
+        *,
+        reply_to_message_id: str | None = None,
+    ) -> int:
+        """静态卡片发出后补投附件（best-effort，绝不影响卡片投递结果）."""
+        client = self._client
+        if not paths or client is None:
+            return 0
+        try:
+            sent = await deliver_media_files(
+                client, chat_id, paths, reply_to_message_id=reply_to_message_id
+            )
+            _logger.info(
+                "static card media delivery: chat=%s files=%d sent=%d",
+                chat_id[:12],
+                len(paths),
+                sent,
+            )
+            return sent
+        except Exception:
+            _logger.warning(
+                "static card media delivery failed: chat=%s", chat_id[:12], exc_info=True
+            )
+            return 0
 
     async def _do_background_deliver(
         self,
