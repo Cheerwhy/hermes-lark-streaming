@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 修复
+
+- CardKit sequence 仅在 API 成功后提交，失败重试复用同一 sequence，避免瞬时失败演变为 300317 冲突。
+- 初始 loading anchor 使用可见文本，缺失时只做一次有界全卡重建，避免 300313/300315 元素漂移持续循环。
+
+### Fixed
+
+- Commit CardKit sequences only after successful API calls so retries reuse the server-expected value.
+- Keep the loading anchor visible and perform one bounded rebuild when it disappears.
+
 ## [0.13.0] - 2026-09-22
 
 ### 变更

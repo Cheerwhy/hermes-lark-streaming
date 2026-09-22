@@ -342,6 +342,14 @@ class TestBuildStreamingCardV2:
         assert card["config"]["streaming_mode"] is True
         assert [e["element_id"] for e in card["body"]["elements"]] == ["loading_icon"]
 
+    def test_loading_anchor_has_persistent_visible_content(self) -> None:
+        card = build_streaming_card_v2()
+        loading = card["body"]["elements"][0]
+        assert loading["element_id"] == "loading_icon"
+        assert loading["content"].strip()
+        assert loading.get("i18n_content")
+        assert "custom_icon" not in str(loading)
+
     def test_width_mode_default(self) -> None:
         card = build_streaming_card_v2()
         assert card["config"]["width_mode"] == "default"
