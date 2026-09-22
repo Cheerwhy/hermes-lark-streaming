@@ -212,6 +212,18 @@ $HERMES_PYTHON -m pip uninstall hermes-lark-streaming
 - 插件与 Hermes 内置飞书适配器互补工作：插件负责流式卡片，内置适配器负责消息收发
 - 仅对飞书平台生效，其他平台不受影响
 
+## 开发测试
+
+日常测试优先复用 `tests/samples/` 中已下载的 Hermes 0.21.1 源码，缺失时按固定 commit 下载并校验哈希。
+该缓存目录由 Git 忽略；缓存完整后可离线运行，测试不会修改实际 Hermes 安装。
+版本清单保留在仓库中，详情见 [样本说明](tests/HERMES_SAMPLES.md)。
+
+```bash
+~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/ -q
+# 按需验证本机新版，只操作临时副本
+~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/test_multifile_patcher.py -k installed_hermes --local-hermes -q
+```
+
 ## 贡献者
 
 感谢以下贡献者的 Issue 和 PR：
@@ -234,15 +246,3 @@ $HERMES_PYTHON -m pip uninstall hermes-lark-streaming
 ## 许可证
 
 [MIT](LICENSE)
-
-## 开发测试
-
-日常测试优先复用 `tests/samples/` 中已下载的 Hermes 0.21.1 源码，缺失时按固定 commit 下载并校验哈希。
-该缓存目录由 Git 忽略；缓存完整后可离线运行，测试不会修改实际 Hermes 安装。
-版本清单保留在仓库中，详情见 [样本说明](tests/HERMES_SAMPLES.md)。
-
-```bash
-~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/ -q
-# 按需验证本机新版，只操作临时副本
-~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/test_multifile_patcher.py -k installed_hermes --local-hermes -q
-```

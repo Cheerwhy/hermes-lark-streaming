@@ -212,6 +212,19 @@ If a message is deleted/recalled, updates are auto-terminated.
 - The plugin complements the built-in Feishu adapter: plugin handles streaming cards, built-in adapter handles message routing
 - Only affects Feishu/Lark platform — other platforms are unaffected
 
+## Development tests
+
+Tests reuse verified Hermes 0.21.1 files in the Git-ignored `tests/samples/` cache,
+downloading missing files from the pinned commit. A complete cache runs offline.
+The manifest stays in Git; the installed Hermes is never changed.
+See the [fixture guide](tests/HERMES_SAMPLES.md) for provenance, checksums and updates.
+
+```bash
+~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/ -q
+# Optional smoke test of local Hermes, on a disposable copy only
+~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/test_multifile_patcher.py -k installed_hermes --local-hermes -q
+```
+
 ## Contributors
 
 Thanks to our contributors for their issues and pull requests:
@@ -234,16 +247,3 @@ Thanks to our contributors for their issues and pull requests:
 ## License
 
 [MIT](LICENSE)
-
-## Development tests
-
-Tests reuse verified Hermes 0.21.1 files in the Git-ignored `tests/samples/` cache,
-downloading missing files from the pinned commit. A complete cache runs offline.
-The manifest stays in Git; the installed Hermes is never changed.
-See the [fixture guide](tests/HERMES_SAMPLES.md) for provenance, checksums and updates.
-
-```bash
-~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/ -q
-# Optional smoke test of local Hermes, on a disposable copy only
-~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/test_multifile_patcher.py -k installed_hermes --local-hermes -q
-```
