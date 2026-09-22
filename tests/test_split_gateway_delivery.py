@@ -5,23 +5,28 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from functools import cache
 from types import ModuleType
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from hermes_sources import SPLIT_LEDGER_REVISION, SPLIT_REVISION, TARGET_REVISION, source_at
+from hermes_sources import patched_gateway, source_at
 from test_split_gateway import context, method, wire_owner
 
 import hermes_lark_streaming.patch as hooks
+import hermes_lark_streaming.streaming.controller as streaming_controller
 from hermes_lark_streaming.controller import StreamCardController
 from hermes_lark_streaming.feishu import FeishuAPIError
-from hermes_lark_streaming.split_gateway import inject_gateway
 
 
-@pytest.fixture(scope="module", params=[SPLIT_REVISION, SPLIT_LEDGER_REVISION, TARGET_REVISION],
-                ids=["split", "split-ledger", "target"])
-def upstream_sources(request):
+@cache
+def _module_code(source, name):
+    return compile(source, name, "exec")
+
+
+@pytest.fixture(scope="module")
+def upstream_sources():
     names = [
         "gateway/run_turn_runner.py", "gateway/run_turn.py", "gateway/run_notifications.py",
         "gateway/stream_consumer.py",
@@ -29,7 +34,7 @@ def upstream_sources(request):
         "gateway/stream_consumer_think.py", "gateway/stream_consumer_fences.py",
         "gateway/response_filters.py", "agent/think_scrubber.py", "agent/stream_delivery.py",
     ]
-    return {name: source_at(name, request.param) for name in names}
+    return {name: source_at(name) for name in names}
 
 
 @pytest.fixture
@@ -49,9 +54,12 @@ def upstream(upstream_sources, monkeypatch):
         assert isinstance(text, str) and "MEDIA:" not in text and "<think>" not in text
         return text
 
-    module("gateway.platforms.base", BasePlatformAdapter=type("BasePlatformAdapter", (), {
+    base_adapter = type("BasePlatformAdapter", (), {
         "strip_media_directives_for_display": staticmethod(plain_text),
-    }), _custom_unit_to_cp=lambda text, budget, len_fn: min(len(text), budget))
+    })
+    module("gateway.platforms.base", BasePlatformAdapter=base_adapter,
+           EphemeralReply=str, _custom_unit_to_cp=lambda text, budget, len_fn: min(len(text), budget))
+    module("gateway.platforms", __path__=[], BasePlatformAdapter=base_adapter)
     module("gateway.config", DEFAULT_STREAMING_EDIT_INTERVAL=0,
            DEFAULT_STREAMING_BUFFER_THRESHOLD=1, DEFAULT_STREAMING_CURSOR="")
     module("agent.memory_manager", sanitize_context=plain_text)
@@ -63,13 +71,13 @@ def upstream(upstream_sources, monkeypatch):
         "gateway.stream_consumer_fallback", "gateway.stream_consumer_think", "gateway.stream_consumer",
     ):
         loaded = module(name)
-        exec(compile(upstream_sources[name.replace(".", "/") + ".py"], name, "exec"), loaded.__dict__)
+        exec(_module_code(upstream_sources[name.replace(".", "/") + ".py"], name), loaded.__dict__)
 
     agent_class = type("DeliveryAgent", (sys.modules["agent.stream_delivery"].StreamDeliveryMixin,), {
         "_stream_callback": None, "_strip_think_blocks": staticmethod(plain_text),
     })
     generated = {
-        name: inject_gateway(name, upstream_sources[f"gateway/{name}"])
+        name: patched_gateway(name)
         for name in ("run_turn_runner.py", "run_turn.py")
     }
     generated["run_notifications.py"] = upstream_sources["gateway/run_notifications.py"]
@@ -82,7 +90,21 @@ def upstream(upstream_sources, monkeypatch):
 
 
 @pytest.fixture
-def controller(tmp_path, monkeypatch):
+def retry_sleep(monkeypatch):
+    # Replace only this module's retry clock, not asyncio globally; still yield
+    # so card creation/finalization tasks run with their normal scheduling.
+    async def yield_once(delay):
+        await asyncio.sleep(0)
+
+    sleeper = AsyncMock(side_effect=yield_once)
+    clock = NS(**vars(asyncio))
+    clock.sleep = sleeper
+    monkeypatch.setattr(streaming_controller, "asyncio", clock)
+    return sleeper
+
+
+@pytest.fixture
+def controller(tmp_path, monkeypatch, retry_sleep):
     ctrl = StreamCardController(profile_home=tmp_path)
     ctrl._cfg._raw = {
         "streaming": {"enabled": True, "footer": {"enabled": False}},
@@ -110,6 +132,8 @@ def setup(upstream, *, native=True, interim=True, tts=None, platform="feishu"):
     owner = NS(_ctx=ctx, _runner=NS(
         config=NS(streaming=NS(enabled=native, transport="auto")),
         _adapter_for_source=lambda _: adapter,
+
+
         _build_stream_consumer_config=lambda *a, **k: (upstream.ConsumerConfig(), None),
     ))
     consumer, delta, interim_cb, want_interim = method(
@@ -160,6 +184,8 @@ async def finish_gateway(upstream, turn, result, monkeypatch):
         _hmwa_compression_exhaustion_reset=AsyncMock(side_effect=lambda r, text, e, *a: (text, e)),
         _hmwa_persist_turn_transcript=AsyncMock(), _hmwa_agent_error_reply=AsyncMock(return_value="unexpected error"),
         _clear_session_env=Mock(), _adapter_for_source=lambda _: turn.adapter,
+
+
         _should_send_voice_reply=lambda *a, **k: False, _deliver_media_from_response=AsyncMock(),
     )
     delivery = method(upstream.generated, "run_turn.py", "_hmwa_deliver_turn_response")
@@ -271,7 +297,7 @@ async def test_zero_accepted_deltas_still_has_one_final_delivery(upstream, contr
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["creation_before_setup", "creation_after_setup", "finalization"])
-async def test_card_failures_leave_full_native_final_fallback(upstream, controller, monkeypatch, failure):
+async def test_card_failures_leave_full_native_final_fallback(upstream, controller, monkeypatch, retry_sleep, failure):
     if failure.startswith("creation"):
         controller._client.cardkit_create.side_effect = FeishuAPIError("test creation failure", code=999999)
     else:
@@ -287,6 +313,9 @@ async def test_card_failures_leave_full_native_final_fallback(upstream, controll
     assert not result.get("already_sent")
     response, _ = await finish_gateway(upstream, turn, result, monkeypatch)
     assert response == "Full final answer. MEDIA:/tmp/result.pdf"
+    if failure == "finalization":
+        assert [call.args for call in retry_sleep.await_args_list] == [(1,), (2,)]
+        assert controller._client.cardkit_update.await_count == 3
     assert not result.get("already_sent")
     # The outer adapter owns this returned fallback; nothing streamed it beforehand.
     turn.adapter.send.assert_not_awaited()

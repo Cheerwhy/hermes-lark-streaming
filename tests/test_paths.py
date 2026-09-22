@@ -120,8 +120,12 @@ def test_not_found_diagnostic_lists_tried_roots(
 
 def test_explicit_path_bypasses_discovery(tmp_path: Path) -> None:
     """显式传 path 时不走发现逻辑，直接用传入值。"""
-    run_py = tmp_path / "run.py"
+    gateway = tmp_path / "gateway"
+    gateway.mkdir()
+    run_py = gateway / "run.py"
     run_py.write_text("# stub\n")
+    # The patcher rejects the monolithic layout, so a split marker file must exist.
+    (gateway / "run_turn.py").write_text("# stub\n")
     assert Patcher(run_path=run_py).run_path == run_py
 
 

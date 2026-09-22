@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from hermes_sources import SPLIT_LEDGER_REVISION, SPLIT_REVISION, TARGET_REVISION, source_at
+from hermes_sources import TREE_FILES
 
 from hermes_lark_streaming import __main__ as cli
 from hermes_lark_streaming import patcher as patcher_module
@@ -18,19 +18,11 @@ from hermes_lark_streaming.patcher import (
     _clean_hooks,
     install_patchers,
 )
-from hermes_lark_streaming.split_gateway import GATEWAY_FILES
 
 
-@pytest.fixture(params=[SPLIT_REVISION, SPLIT_LEDGER_REVISION, TARGET_REVISION],
-                ids=["split", "split-ledger", "target"])
-def installation(tmp_path: Path, request: pytest.FixtureRequest) -> tuple[Patcher, CronPatcher]:
-    paths = ["gateway/run.py", *(f"gateway/{name}" for name in GATEWAY_FILES),
-             "cron/scheduler.py", "cron/scheduler_delivery.py"]
-    for relative in paths:
-        path = tmp_path / relative
-        path.parent.mkdir(exist_ok=True)
-        path.write_text(source_at(relative, request.param), encoding="utf-8")
-    return Patcher(tmp_path / "gateway/run.py"), CronPatcher(tmp_path / "cron/scheduler.py")
+@pytest.fixture
+def installation(hermes_tree: Path) -> tuple[Patcher, CronPatcher]:
+    return Patcher(hermes_tree / "gateway/run.py"), CronPatcher(hermes_tree / "cron/scheduler.py")
 
 
 def snapshot(root: Path) -> dict[str, bytes]:
@@ -38,9 +30,8 @@ def snapshot(root: Path) -> dict[str, bytes]:
 
 
 def test_split_verify_is_read_only_and_compiles_all_targets(installation, tmp_path):
-    gateway, cron = installation
+    _gateway, cron = installation
     original = snapshot(tmp_path)
-    assert gateway.split and cron.split
     assert cron.cron_path.name == "scheduler_delivery.py"
     for patcher in installation:
         patcher.verify_target()
@@ -49,12 +40,13 @@ def test_split_verify_is_read_only_and_compiles_all_targets(installation, tmp_pa
     assert snapshot(tmp_path) == original
 
 
-def test_installed_hermes_round_trip_on_isolated_copy(tmp_path):
+def test_installed_hermes_round_trip_on_isolated_copy(tmp_path, request):
+    if not request.config.getoption("--local-hermes"):
+        pytest.skip("Opt in with --local-hermes")
     root = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "hermes-agent"
     if not (root / "gateway/run_turn.py").exists():
-        pytest.skip("No local split Hermes checkout; pinned-source tests cover CI")
-    paths = ["gateway/run.py", *(f"gateway/{name}" for name in GATEWAY_FILES),
-             "cron/scheduler.py", "cron/scheduler_delivery.py"]
+        pytest.skip("No local split Hermes checkout")
+    paths = TREE_FILES
     for relative in paths:
         destination = tmp_path / relative
         destination.parent.mkdir(exist_ok=True)
@@ -186,14 +178,18 @@ def test_crlf_install_restore_and_rollback_preserve_bytes(installation, tmp_path
 
 
 @pytest.mark.parametrize("operation", ["remove", "restore"])
-def test_invalid_python_inside_complete_hook_can_be_recovered(tmp_path, operation):
-    path = tmp_path / "run.py"
-    clean = "def _handle_message_with_agent():\n    pass\n"
-    path.write_text(clean + "# HERMES_LARK_START_BEGIN\n!broken hook\n# HERMES_LARK_START_END\n")
-    path.with_suffix(".py.hermes_lark.bak").write_text(clean)
-    patcher = Patcher(path)
-    getattr(patcher, operation)()
-    assert path.read_text() == clean
+def test_invalid_python_inside_complete_hook_can_be_recovered(installation, operation):
+    """A corrupted injected block is recoverable from the split module's own backup."""
+    gateway, _cron = installation
+    path = gateway.run_path.parent / "run_turn.py"
+    clean = path.read_text(encoding="utf-8")
+    path.write_text(
+        clean + "# HERMES_LARK_START_BEGIN\n!broken hook\n# HERMES_LARK_START_END\n",
+        encoding="utf-8",
+    )
+    path.with_suffix(path.suffix + ".hermes_lark.bak").write_text(clean, encoding="utf-8")
+    getattr(gateway, operation)()
+    assert path.read_text(encoding="utf-8") == clean
 
 
 def test_stale_backups_are_not_restored_and_are_refreshed_on_install(installation, tmp_path):

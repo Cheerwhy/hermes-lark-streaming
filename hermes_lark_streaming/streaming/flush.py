@@ -36,14 +36,6 @@ class FlushController:
     def throttle_ms(self) -> float:
         return self._throttle_ms
 
-    @throttle_ms.setter
-    def throttle_ms(self, value: float) -> None:
-        self._throttle_ms = value
-
-    @property
-    def last_update_time(self) -> float:
-        return self._last_update_time
-
     def schedule_update(self, do_flush: Callable[[], Awaitable[None]]) -> None:
         """请求一次节流后的卡片刷新.
 

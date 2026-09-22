@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from hermes_lark_streaming.cardkit.builder import (
-    REASONING_ELEMENT_ID,
     REASONING_TEXT_ELEMENT_ID,
     TOOL_PANEL_ELEMENT_ID,
     _build_footer_elements,
@@ -341,35 +340,7 @@ class TestBuildStreamingCardV2:
         card = build_streaming_card_v2()
         assert card["schema"] == "2.0"
         assert card["config"]["streaming_mode"] is True
-        assert card["body"]["elements"]
-
-    def test_with_tool_steps(self) -> None:
-        card = build_streaming_card_v2(tool_steps=[_STEP_RUNNING], elapsed_ms=100)
-        assert any(e.get("element_id") == TOOL_PANEL_ELEMENT_ID for e in card["body"]["elements"])
-
-    def test_no_tool_use(self) -> None:
-        card = build_streaming_card_v2(show_tool_use=False)
-        assert not any(e.get("element_id") == TOOL_PANEL_ELEMENT_ID for e in card["body"]["elements"])
-
-    def test_show_reasoning_adds_panel(self) -> None:
-        card = build_streaming_card_v2(show_reasoning=True)
-        assert any(e.get("element_id") == REASONING_ELEMENT_ID for e in card["body"]["elements"])
-
-    def test_show_reasoning_default_no_panel(self) -> None:
-        card = build_streaming_card_v2()
-        assert not any(e.get("element_id") == REASONING_ELEMENT_ID for e in card["body"]["elements"])
-
-    def test_reasoning_before_tool_before_answer(self) -> None:
-        card = build_streaming_card_v2(
-            show_reasoning=True,
-            tool_steps=[_STEP_RUNNING],
-            elapsed_ms=100,
-            show_tool_use=True,
-        )
-        ids = [e.get("element_id") for e in card["body"]["elements"]]
-        reasoning_idx = ids.index(REASONING_ELEMENT_ID)
-        tool_idx = ids.index(TOOL_PANEL_ELEMENT_ID)
-        assert reasoning_idx < tool_idx
+        assert [e["element_id"] for e in card["body"]["elements"]] == ["loading_icon"]
 
     def test_width_mode_default(self) -> None:
         card = build_streaming_card_v2()

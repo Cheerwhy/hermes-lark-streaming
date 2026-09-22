@@ -142,7 +142,7 @@ def _cmd_status() -> int:
     patched = patcher.is_patched()
     print(f"Patched: {'yes' if patched else 'no'}")
     print(f"Target:  {patcher.run_path}")
-    print(f"Layout:  {'split gateway modules' if patcher.split else 'monolithic gateway'}")
+    print("Layout:  split gateway modules")
 
     if patched:
         print(f"Fully patched: {'yes' if patcher.is_fully_patched() else 'no'}")
@@ -206,10 +206,9 @@ def _cmd_verify() -> int:
         return 1
 
     print(f"Target: {patcher.run_path}")
-    if patcher.split:
-        print("Layout: split gateway modules")
-        for path in patcher.target_paths[1:]:
-            print(f"  {path}")
+    print("Layout: split gateway modules")
+    for path in patcher.target_paths[1:]:
+        print(f"  {path}")
     print("Checking compatibility...")
     try:
         patcher.verify_target()

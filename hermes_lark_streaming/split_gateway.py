@@ -38,16 +38,31 @@ def inject_gateway(filename: str, content: str) -> str:
         raise p.PatcherError(f"Invalid {filename}: {exc}") from exc
     lines = content.splitlines(keepends=True)
     edits: list[tuple[int, str]] = []
+    # Index every parent once, preserving duplicate names for fail-closed validation.
+    function_indexes: dict[ast.AST, dict[str, list[ast.AST]]] = {}
+    nodes_memo: dict[str, list[ast.AST]] = {}
 
     def scope(name: str, parent: ast.AST = tree) -> ast.AST:
-        matches = [n for n in ast.walk(parent)
-                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name]
+        if parent not in function_indexes:
+            index: dict[str, list[ast.AST]] = {}
+            for node in ast.walk(parent):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    index.setdefault(node.name, []).append(node)
+            function_indexes[parent] = index
+        matches = function_indexes[parent].get(name, [])
         if len(matches) != 1:
             raise p.PatcherError(f"{filename}: expected one function {name}, found {len(matches)}")
         return matches[0]
 
+    def scoped(fn: str) -> list[ast.AST]:
+        if fn not in nodes_memo:
+            nodes_memo[fn] = list(_scoped_nodes(scope(fn)))
+        return nodes_memo[fn]
+
     def select(fn: str, predicate: Callable[[ast.AST], bool], count: int = 1) -> list[ast.AST]:
-        matches = [n for n in _scoped_nodes(scope(fn)) if predicate(n)]
+        # Collect every match: the count check is a fail-closed guard against ambiguous
+        # anchors, so a short-circuit at ``count`` would hide extra/unknown nodes.
+        matches = [node for node in scoped(fn) if predicate(node)]
         if len(matches) != count:
             raise p.PatcherError(f"{filename}:{fn}: expected {count} anchors, found {len(matches)}")
         return matches
@@ -186,17 +201,8 @@ def inject_gateway(filename: str, content: str) -> str:
         # Complete after transcript persistence and response rewrites (including context-reset
         # notices), but before the native delivery decision. Strip only the footer we observed
         # upstream append; CardKit renders its own footer from the structured usage fields.
-        complete = p._complete_hook("").replace("duration=_response_time", "duration=_turn_seconds")
-        complete = complete.replace("answer=response", "answer=_lark_completion_answer")
-        complete = complete.replace(
-            "is_error=bool(agent_result.get('failed')),",
-            "is_error=bool(agent_result.get('failed')),\n"
-            "        reconcile_answer=bool(agent_result.get('failed') or agent_result.get('response_transformed')\n"
-            "                              or _lark_completion_answer != _lark_original_response),",
-        )
         # Silence must terminate an existing streaming session without rendering its marker.
-        complete = "\n".join(complete.splitlines()[1:-1]) + "\n"
-        complete_body = textwrap.indent(complete, "    ")
+        complete_body = p._complete_body("    ")
         prefix = textwrap.dedent("""
             _lark_completion_answer = response
             _lark_footer_suffix = '\\n\\n' + _footer_line

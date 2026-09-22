@@ -13,28 +13,61 @@ import threading
 import time
 from contextlib import suppress
 from datetime import datetime
+from functools import cache
+from types import ModuleType
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from hermes_sources import SPLIT_REVISION, TARGET_REVISION, source_at
+from hermes_sources import patched_gateway, source_at
 
 from hermes_lark_streaming.patcher import MARKERS, PatcherError, _remove_block
 from hermes_lark_streaming.split_gateway import GATEWAY_FILES, inject_gateway
 
 
+def _stub_gateway_packages(monkeypatch):
+    """Register bare parent packages so upstream late imports resolve without executing Hermes.
+
+    ``gateway/__init__.py`` pulls in every adapter, so a name-only sys.modules stub is
+    the only way to execute a single split module in isolation (Hermes >= 0.21.1).
+    """
+    modules = {
+        "gateway": dict(__path__=[]),
+        "gateway.platforms": dict(__path__=[]),
+        "gateway.platforms.base": dict(
+            BasePlatformAdapter=type("BasePlatformAdapter", (), {}),
+            MessageEvent=type("MessageEvent", (), {}),
+            merge_pending_message_event=Mock(), EphemeralReply=str,
+        ),
+        "gateway.run": dict(_preserve_queued_followup_history_offset=lambda old, new: new),
+    }
+    for name, attrs in modules.items():
+        loaded = ModuleType(name)
+        loaded.__dict__.update(attrs)
+        monkeypatch.setitem(sys.modules, name, loaded)
+
+
+def _event(message_id, anchor, *, present=True):
+    """Minimal event with distinct inbound identity and reply anchor."""
+    fields = dict(anchor=anchor)
+    if present:
+        fields["message_id"] = message_id
+    return NS(**fields)
+
+
 @pytest.fixture(scope="module")
 def sources():
-    return {name: source_at(f"gateway/{name}", SPLIT_REVISION) for name in GATEWAY_FILES}
+    return {name: source_at(f"gateway/{name}") for name in GATEWAY_FILES}
 
 
 @pytest.fixture(scope="module")
 def patched(sources):
-    return {name: inject_gateway(name, source) for name, source in sources.items()}
+    return {name: patched_gateway(name) for name in sources}
 
 
-def method(patched, filename, name, **extra):
-    tree = ast.parse(patched[filename])
+@cache
+def _method_code(content, filename, name):
+    tree = ast.parse(content)
     matches = [n for n in ast.walk(tree)
                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name]
     assert len(matches) == 1
@@ -43,9 +76,14 @@ def method(patched, filename, name, **extra):
     future = ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
     module = ast.Module(body=[future, node], type_ignores=[])
     ast.fix_missing_locations(module)
+    return compile(module, filename, "exec")
+
+
+def method(patched, filename, name, **extra):
     namespace = dict(logger=logging.getLogger(__name__), time=time, suppress=suppress,
-                     inspect=inspect, threading=threading, datetime=datetime, **extra)
-    exec(compile(module, filename, "exec"), namespace)
+                     inspect=inspect, threading=threading, datetime=datetime,
+                     **extra)
+    exec(_method_code(patched[filename], filename, name), namespace)
     return namespace[name]
 
 
@@ -232,7 +270,8 @@ async def test_queued_completion_preserves_media(patched, hooks, owned, failed, 
     release = Mock()
     owner = NS(_run_agent_stream_confirmed_final_delivery=Mock(return_value=not owned),
                _is_intentional_silence=lambda r, t: t == "[SILENT]",
-               _deliver_queued_first_response=AsyncMock(), _pop_post_delivery_callback=lambda *a: release)
+               _deliver_queued_first_response=AsyncMock(return_value=True),
+               _pop_post_delivery_callback=lambda *a: release)
     fn = method(patched, "run_turn.py", "_run_agent_deliver_first_response")
     await fn(owner, context(), object(), response, raw, None)
     if silent:
@@ -254,14 +293,14 @@ async def test_queued_completion_preserves_media(patched, hooks, owned, failed, 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("interrupted", [False, True])
 async def test_multihop_followup_identity_and_anchor(patched, hooks, monkeypatch, interrupted):
-    monkeypatch.setitem(sys.modules, "gateway.platforms.base", NS(merge_pending_message_event=Mock()))
-    monkeypatch.setitem(sys.modules, "gateway.run", NS(_preserve_queued_followup_history_offset=lambda old, new: new))
+    _stub_gateway_packages(monkeypatch)
     fn = method(patched, "run_turn.py", "_run_agent_queued_followup")
     calls = []
     owner = NS(_MAX_INTERRUPT_DEPTH=10, _is_goal_continuation_event=lambda _: False,
                _session_key_for_source=lambda _: "session", _reply_anchor_for_event=lambda e: e.anchor,
                _prepare_profile_scoped_inbound_message_text=AsyncMock(return_value="next"),
-               _adapter_for_source=lambda _: None, _refresh_agent_cache_message_count=AsyncMock(),
+               _adapter_for_source=lambda _: None,
+               _refresh_agent_cache_message_count=AsyncMock(),
                _run_agent_deliver_first_response=AsyncMock())
 
     async def run_agent(**kwargs):
@@ -269,14 +308,14 @@ async def test_multihop_followup_identity_and_anchor(patched, hooks, monkeypatch
         if kwargs["inbound_message_id"] == "B":
             ctx = context(inbound_message_id="B", event_message_id="quote-B", session_id="sid", history=[],
                           _interrupt_depth=1, context_prompt="prompt")
-            return await fn(owner, ctx, None, "C", NS(message_id="C", anchor="quote-C"), {},
+            return await fn(owner, ctx, None, "C", _event("C", "quote-C"), {},
                             {"messages": [], "interrupted": interrupted}, None)
         return {"final_response": "C answer"}
 
     owner._run_agent = run_agent
     ctx = context(inbound_message_id="A", event_message_id="quote-A", session_id="sid", history=[],
                   _interrupt_depth=0, context_prompt="prompt")
-    result = await fn(owner, ctx, None, "B", NS(message_id="B", anchor="quote-B"), {},
+    result = await fn(owner, ctx, None, "B", _event("B", "quote-B"), {},
                       {"messages": [], "interrupted": interrupted}, None)
     assert result["_hermes_lark_completion_id"] == "C"
     assert [(c["inbound_message_id"], c["event_message_id"]) for c in calls] == [("B", "quote-B"), ("C", "quote-C")]
@@ -463,11 +502,9 @@ def test_tts_error_does_not_replay_delta_to_native(patched, hooks):
     voice.on_delta.assert_called_once_with("answer")
 
 
-@pytest.mark.parametrize("revision", [SPLIT_REVISION, TARGET_REVISION])
 @pytest.mark.parametrize("card_error", [False, True])
-def test_card_interim_preserves_tts_boundaries(hooks, revision, card_error):
-    source = source_at("gateway/run_turn_runner.py", revision)
-    generated = {"run_turn_runner.py": inject_gateway("run_turn_runner.py", source)}
+def test_card_interim_preserves_tts_boundaries(hooks, card_error):
+    generated = {"run_turn_runner.py": patched_gateway("run_turn_runner.py")}
     voice = Mock()
     ctx = context(streaming_tts_consumer_holder=[voice])
     owner = NS(_ctx=ctx, _runner=NS(config=NS(streaming=object())))
@@ -490,9 +527,8 @@ def test_card_interim_preserves_tts_boundaries(hooks, revision, card_error):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
-async def test_target_inbound_finally_preserves_generation_cleanup(hooks, monkeypatch, outcome):
-    source = source_at("gateway/run_inbound.py", TARGET_REVISION)
-    generated = {"run_inbound.py": inject_gateway("run_inbound.py", source)}
+async def test_inbound_finally_preserves_cleanup(hooks, monkeypatch, outcome):
+    generated = {"run_inbound.py": patched_gateway("run_inbound.py")}
     monkeypatch.setitem(sys.modules, "gateway.run", NS(_AGENT_PENDING_SENTINEL=object()))
     event = NS(message_id="inbound")
     source_obj = context().source
@@ -509,9 +545,10 @@ async def test_target_inbound_finally_preserves_generation_cleanup(hooks, monkey
         _session_state=lambda _: NS(turn=NS()), _persist_active_agents=Mock(),
         _begin_session_run_generation=lambda _: 17,
         _handle_message_with_agent=AsyncMock(return_value="answer"), _run_post_turn_hooks=AsyncMock(),
-        _restore_pending_one_turn_model_override=lambda key, gen: order.append(("restore", key, gen)),
+        _restore_moa_one_shot=lambda event, key: order.append(("moa", event.message_id, key)),
+        _restore_pending_one_turn_model_override=lambda key: order.append(("restore", key)),
         _clear_durable_active_turn=AsyncMock(side_effect=lambda e: order.append(("durable", e.message_id))),
-        _release_running_agent_state=lambda key, *, run_generation: order.append(("release", key, run_generation)),
+        _release_running_agent_state=lambda key: order.append(("release", key)),
         _release_turn_lease=lambda key, gen: order.append(("lease", key, gen)),
     )
     fn = method(generated, "run_inbound.py", "_handle_message",
@@ -523,8 +560,8 @@ async def test_target_inbound_finally_preserves_generation_cleanup(hooks, monkey
         owner._handle_message_with_agent.side_effect = error()
         with pytest.raises(error):
             await fn(owner, event)
-    assert order == [("card", "inbound"), ("restore", "session", 17), ("durable", "inbound"),
-                     ("release", "session", 17), ("lease", "session", 17)]
+    assert order == [("card", "inbound"), ("moa", "inbound", "session"), ("restore", "session"),
+                     ("durable", "inbound"), ("release", "session"), ("lease", "session", 17)]
 
 
 @pytest.mark.asyncio
@@ -536,7 +573,8 @@ async def test_background_inner_delivery_keeps_attachments(patched, hooks, monke
         _load_gateway_config=lambda: {}, _platform_config_key=lambda _: "feishu",
     ))
     monkeypatch.setitem(sys.modules, "run_agent", NS(AIAgent=Mock()))
-    monkeypatch.setitem(sys.modules, "gateway.platforms.base", NS(should_send_media_as_audio=lambda *a: False))
+    monkeypatch.setitem(sys.modules, "gateway.platforms.base",
+                        NS(should_send_media_as_audio=lambda *a: False, EphemeralReply=str))
     monkeypatch.setitem(sys.modules, "gateway.run_notifications", NS(_IMAGE_EXTS=set(), _VIDEO_EXTS=set()))
     hooks.on_background_deliver.return_value = owned
     adapter = NS(extract_media=lambda _: ([("/tmp/file.pdf", False)] if media else [], "answer"),

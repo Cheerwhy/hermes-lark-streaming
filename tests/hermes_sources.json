@@ -1,0 +1,24 @@
+{
+  "version": "0.21.1",
+  "revision": "2237be355906fbe6065ce1815711eee52b2d646e",
+  "repository": "https://github.com/NousResearch/hermes-agent",
+  "sha256": {
+    "gateway/run.py": "39e574061458da89692a6d80c200af0711388547cffec2f28c3a1dce4f3abad6",
+    "gateway/run_inbound.py": "e3241bff847dd1314b0b09e6db03a72f5bc916329a42bb3966dfd9429a15fca1",
+    "gateway/run_busy.py": "fa6c4870067d9e0c5b9e0c5275d794879b3e1950952523369836ba31c9ad882f",
+    "gateway/run_turn.py": "38f42472bb2ada6745d39ac561c6b0f4d2961a428254628a9a4740d535df5b57",
+    "gateway/run_turn_runner.py": "79889c14ba996cf75c1ec6d5cf927adc9ef47c5038b3dda702d183fa291d44d3",
+    "gateway/run_notifications.py": "6d270df8ffb5e3c2d72a252aad955f5dd56dfef9143458b0e0e8437dc1f515f3",
+    "gateway/stream_consumer.py": "9af7e387db62a08898de14a331cf586079a99eb5107cda568cce6efceb47579c",
+    "gateway/stream_consumer_transport.py": "95766604e3bceb921128d5bbc08108f7d81e38de8ef1e49f510db1dbc8d0b8cf",
+    "gateway/stream_consumer_fallback.py": "70b4b5e2329cbd1d0ddc56668bee9f0dfb8c4087f666ba11da5e60cb14db49a0",
+    "gateway/stream_consumer_think.py": "ec6d8a93f4ac00e0be93c44eae731b7297d3ea4545e68204c6810a9534b8cfec",
+    "gateway/stream_consumer_fences.py": "2271d365b19eac715b04c9cd5078a095f648b5796427dcc0716bd3bac6bfb92b",
+    "gateway/response_filters.py": "6b664c2f6c1b9bf63f2fe838efa4d8049896f8ea1c977ef32e29186463993b9a",
+    "cron/scheduler.py": "58f3ee95e068214fbc5f6f37c01eb10717009a7c00f552a75475ff42d5031692",
+    "cron/scheduler_delivery.py": "919e2f98f0e0a2191e11c85f94238ade9aed25706726033645507354978561c4",
+    "agent/think_scrubber.py": "6ceb04bbc2549811f16380728e559dabad60a19d5a40777270ccc3742612d0ad",
+    "agent/stream_delivery.py": "38d3fda9b9ab09048c14154588e30fa695db89db20efb06fdeb6ffdbf00721c3",
+    "LICENSE": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6"
+  }
+}

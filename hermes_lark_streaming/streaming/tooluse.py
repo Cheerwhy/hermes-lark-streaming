@@ -52,7 +52,6 @@ class ToolStep:
 @dataclass
 class ToolSession:
     steps: list[ToolStep] = field(default_factory=list)
-    started_at: float = 0.0
 
 
 _SENSITIVE_NAME_RE = re.compile(
@@ -247,15 +246,9 @@ class ToolUseTracker:
         self._session: ToolSession | None = None
         self._max_steps = max_steps
 
-    @property
-    def elapsed_ms(self) -> float:
-        if self._session is None:
-            return 0.0
-        return (time.time() - self._session.started_at) * 1000
-
     def record_start(self, name: str, detail: str = "") -> None:
         if self._session is None:
-            self._session = ToolSession(started_at=time.time())
+            self._session = ToolSession()
         if len(self._session.steps) >= self._max_steps:
             return
         self._session.steps.append(

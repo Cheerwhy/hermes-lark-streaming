@@ -388,48 +388,13 @@ def _format_elapsed(ms: float) -> str:
     return f"{seconds:.1f}s" if seconds < 60 else f"{int(seconds // 60)}m {int(seconds % 60)}s"
 
 
-def build_streaming_tool_use_pending_panel() -> dict[str, Any]:
-    return _collapsible_panel(
-        expanded=False,
-        title_el={
-            "tag": "plain_text",
-            "content": _T["tool_pending"][0],
-            "i18n_content": _t("tool_pending"),
-            "text_color": "grey",
-            "text_size": "notation",
-        },
-        elements=[],
-    )
-
-
 def build_streaming_card_v2(
     *,
-    tool_steps: list[ToolDisplayStep] | None = None,
-    elapsed_ms: float = 0,
-    show_tool_use: bool = True,
-    show_reasoning: bool = False,
-    show_streaming_element: bool = True,
     header_enabled: bool = False,
-    text_size: str = "normal_v2",
     width_mode: str = "default",
 ) -> dict[str, Any]:
-    """CardKit 2.0 流式占位卡片 — 含工具面板 + streaming + loading 元素."""
-    elements: list[dict] = []
-
-    if show_reasoning:
-        elements.append(
-            _build_reasoning_panel(" ", expanded=True, element_id=REASONING_ELEMENT_ID)
-        )
-
-    if show_tool_use:
-        if tool_steps:
-            elements.append(_build_tool_panel(tool_steps, elapsed_ms))
-        else:
-            elements.append(build_streaming_tool_use_pending_panel())
-
-    if show_streaming_element:
-        elements.append(_streaming_element(text_size=text_size))
-    elements.append(_loading_element())
+    """Initial loading card; content elements are added in segment arrival order."""
+    elements = [_loading_element()]
 
     card = {
         "schema": "2.0",

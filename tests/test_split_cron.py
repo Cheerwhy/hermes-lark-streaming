@@ -1,4 +1,4 @@
-"""Executable synthetic and revision-pinned cron lanes, without live installation or sends."""
+"""Executable synthetic and pinned-source cron lanes, without live sends."""
 
 import ast
 import asyncio
@@ -9,7 +9,7 @@ from concurrent.futures import Future
 from types import SimpleNamespace
 
 import pytest
-from hermes_sources import TARGET_REVISION, source_at
+from hermes_sources import source_at
 
 from hermes_lark_streaming import patch
 from hermes_lark_streaming.controller import StreamCardController
@@ -134,7 +134,7 @@ def target(**overrides):
     return SimpleNamespace(**fields)
 
 
-def runtime(monkeypatch, *, hook=True, patched=True, target_revision=False):
+def runtime(monkeypatch, *, hook=True, patched=True, pinned_source=False):
     events = []
 
     def card(**kwargs):
@@ -158,6 +158,7 @@ def runtime(monkeypatch, *, hook=True, patched=True, target_revision=False):
     namespace = dict(
         events=events, asyncio=asyncio, logger=logging.getLogger(__name__),
         DeliveryRouter=lambda *_: None,
+        _get_standalone_send_timeout=lambda: 30,
         _live_route_metadata=lambda t: (t.thread_id, t.metadata, t.metadata),
         _live_send_media=media,
         _seed_live_delivery_sessions=lambda t, mid: events.append(
@@ -165,14 +166,14 @@ def runtime(monkeypatch, *, hook=True, patched=True, target_revision=False):
         _send_to_platform=standalone,
     )
     exec(compile(inject_cron(SOURCE) if patched else SOURCE, '<cron-fixture>', 'exec'), namespace)
-    if target_revision:
+    if pinned_source:
         # Execute the target's actual send lanes; isolate only imports and external I/O.
         monkeypatch.setitem(sys.modules, 'agent.async_utils', SimpleNamespace(safe_schedule_threadsafe=None))
         monkeypatch.setitem(sys.modules, 'gateway.delivery', SimpleNamespace(
             DeliveryRouter=namespace['DeliveryRouter'], DeliveryTarget=None))
         monkeypatch.setitem(sys.modules, 'tools.send_message_tool', SimpleNamespace(_send_to_platform=standalone))
         namespace['_sched'] = SimpleNamespace(_interpreter_shutting_down=lambda: False)
-        source = inject_cron(source_at('cron/scheduler_delivery.py', TARGET_REVISION))
+        source = inject_cron(source_at('cron/scheduler_delivery.py'))
         tree = ast.parse(source)
         functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in (
             '_live_send_text', '_deliver_via_live_adapter', '_standalone_send')]
@@ -290,10 +291,10 @@ def test_rejected_live_route_does_not_consume_standalone_attempt(monkeypatch):
     assert [e[0] for e in events] == ['native_text', 'card', 'mirror']
 
 
-@pytest.mark.parametrize('target_revision', [False, True])
+@pytest.mark.parametrize('pinned_source', [False, True], ids=['synthetic', '0.21.1'])
 @pytest.mark.parametrize('live', [False, True])
-def test_pending_controller_timeout_is_not_retried_across_lanes(monkeypatch, target_revision, live):
-    run, events = runtime(monkeypatch, target_revision=target_revision)
+def test_pending_controller_timeout_is_not_retried_across_lanes(monkeypatch, pinned_source, live):
+    run, events = runtime(monkeypatch, pinned_source=pinned_source)
     pending = []
     sent = []
 

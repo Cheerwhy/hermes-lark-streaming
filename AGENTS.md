@@ -2,7 +2,7 @@
 
 ## Project
 
-Hermes Gateway plugin that injects hooks into `~/.hermes/hermes-agent/gateway/run.py` and `cron/scheduler.py` via AST patching to provide real-time streaming Feishu/Lark CardKit v2.0 cards with typewriter effect.
+Hermes Gateway plugin that injects hooks into Hermes split gateway modules and `cron/scheduler_delivery.py` via AST patching to provide real-time streaming Feishu/Lark CardKit v2.0 cards with typewriter effect.
 
 ## Commands
 
@@ -11,7 +11,7 @@ Hermes Gateway plugin that injects hooks into `~/.hermes/hermes-agent/gateway/ru
 HERMES_PYTHON=~/.hermes/hermes-agent/venv/bin/python3
 
 $HERMES_PYTHON -m hermes_lark_streaming verify     # Check compatibility (safe, no file changes)
-$HERMES_PYTHON -m hermes_lark_streaming install    # Inject hooks into run.py and cron/scheduler.py
+$HERMES_PYTHON -m hermes_lark_streaming install    # Inject hooks into split gateway and cron delivery modules
 $HERMES_PYTHON -m hermes_lark_streaming uninstall  # Remove hooks
 $HERMES_PYTHON -m hermes_lark_streaming restore    # Restore from .hermes_lark.bak backup
 $HERMES_PYTHON -m hermes_lark_streaming status     # Show patch status
@@ -24,15 +24,18 @@ $HERMES_PYTHON -m pip install -e ".[dev]"  # test dependencies
 $HERMES_PYTHON -m ruff check hermes_lark_streaming tests
 $HERMES_PYTHON -m mypy hermes_lark_streaming/
 
-# Run tests (local run.py first, CI auto-downloads from GitHub)
+# Run tests (reuse tests/samples cache; download missing files at pinned 0.21.1 commit)
 $HERMES_PYTHON -m pytest tests/ -q
+
+# Optional local Hermes smoke test; only an isolated temporary copy is patched
+$HERMES_PYTHON -m pytest tests/test_multifile_patcher.py -k installed_hermes --local-hermes -q
 ```
 
 ## Architecture
 
 ```
-gateway/run.py (Hermes)
-  └─ AST-injected hooks (patcher.py defines markers + injection logic)
+gateway/run_inbound.py, run_turn.py, run_turn_runner.py, run_busy.py (Hermes)
+  └─ AST-injected hooks (patcher.py defines markers; split_gateway.py locates anchors)
        │
        ├─ on_feishu_normalize   → patch.on_feishu_normalize() (inline, fixes false thread_id)
        ├─ on_message_started    → controller.on_message_started()
@@ -42,15 +45,14 @@ gateway/run.py (Hermes)
        ├─ on_reasoning_delta    → controller.on_reasoning()
        ├─ on_background_review_message → controller.defer_background_review()
        ├─ on_message_interrupted → controller.on_interrupted()
-       ├─ on_queued_followup_boundary → patch.on_queued_followup_boundary() (finalize card before drain, set response_previewed/already_sent)
        ├─ on_queued_followup_result   → patch.on_queued_followup_result() (carry deepest completion ID through recursive merge)
        ├─ on_message_completed_wait → controller.on_completed_wait()
        ├─ on_message_aborted    → controller.on_aborted()
        ├─ on_session_aborted    → controller.on_session_aborted() (busy-session /stop)
        └─ on_background_deliver → controller.on_background_deliver()
 
-cron/scheduler.py (Hermes)
-  └─ CronPatcher (patcher.py) injects on_cron_deliver into _deliver_result
+cron/scheduler_delivery.py (Hermes)
+  └─ CronPatcher + split_cron inject into live and standalone delivery lanes
        └─ intercepts feishu/lark targets → build_cron_card → send_card_to_chat
 
 StreamCardController (singleton, controller.py)
@@ -80,7 +82,7 @@ FeishuClient (feishu.py) — lark-oapi SDK wrapper
 Card templates (cardkit/)
   ├─ builder.py — builds Feishu card JSON
   │   ├─ _build_header — card-level header with status-based theming (blue/green/red)
-  │   ├─ build_streaming_card_v2 — initial streaming CardKit v2 card (header_enabled, text_size)
+  │   ├─ build_streaming_card_v2 — initial loading CardKit v2 card (header_enabled, width_mode)
   │   ├─ build_complete_card — final card, renders segments in order (header_enabled, body_text_size, footer_enabled, footer_text_size)
   │   ├─ build_cron_card — static card for cron delivery
   │   └─ build_background_card — static card for background task delivery
@@ -90,16 +92,16 @@ Card templates (cardkit/)
 
 ## Key Constraints
 
-- Hermes `>= 0.14.0` (2026.5.16) required. `patcher.py` targets specific function names in Hermes's `gateway/run.py` (`_handle_message_with_agent`, `progress_callback`, `_stream_delta_cb`, `_interim_assistant_cb`) and `cron/scheduler.py` (`_deliver_result`). If Hermes changes these, `verify` will catch it.
-- The interrupt hook is injected at the `"Restart typing indicator"` comment in `_run_agent`. It fires when `was_interrupted and next_message_id` are both truthy. The `_interrupt_map` redirects completion from `old_id` to the new session, handling nested interrupts (A→B→C).
-- The completion hook installed into `gateway/run.py` is async: `on_message_completed_wait` awaits queued CardKit creation/finalization before setting `already_sent`. Upgrades must rerun `uninstall` + `install` so older sync completion hooks are removed from Hermes gateway.
-- The `_thinking_hook` has a `not already_streamed` guard (patcher.py:103) — thinking deltas are skipped once answer streaming has begun.
-- The NORMALIZE hook (`on_feishu_normalize`) is injected at `source = event.source` in `_handle_message`, before any other processing. It detects Feishu quoted messages with a false `thread_id` (set by the Feishu adapter but absent in raw event) and clears it, preventing `_reply_anchor_for_event` from returning the wrong ID.
+- Hermes `>= 0.21.1` (2026.9.7) split layout is required. `split_gateway.py` and `split_cron.py` validate function-scoped AST anchors and reject missing or ambiguous matches. `gateway/run.py` and `cron/scheduler.py` are entry points, not injection targets.
+- The interrupt hook runs before the recursive `_run_agent` call in `_run_agent_queued_followup`. It separates inbound identity from the reply anchor and starts or redirects the next card. `_interrupt_map` handles nested interrupts (A→B→C).
+- The completion hook in `run_turn.py` is async: `on_message_completed_wait` awaits card creation/finalization before setting `already_sent`. Reinstall hooks after upgrading. Legacy markers remain removable; `on_queued_followup_boundary` remains only as a shim for previously installed hooks.
+- The split interim callback uses `not already_streamed` to avoid duplicating answer text as thinking, while preserving streaming TTS boundaries.
+- NORMALIZE runs at both `source = event.source` admission sites in `_hm_admit_event` (`run_inbound.py`). It clears false Feishu quote thread IDs before routing so reply anchors remain correct.
 - The `anchor_id` mechanism: for Feishu quoted messages, `_reply_anchor_for_event(event)` returns `reply_to_message_id` instead of `event.message_id`. The START hook passes both — `message_id` for session identity and streaming callback lookup, `anchor_id` for card delivery (reply target). Sessions are registered under both keys.
 - Reasoning display depends on upstream providing `<thinking>`/`<thought>`/`<antthinking>` tags or `Reasoning:\n` prefix in text. Native API reasoning blocks (Anthropic extended thinking, DeepSeek reasoning_content) are available via `on_reasoning_delta` hook when `display.platforms.feishu.show_reasoning` is enabled.
 - CardKit v2.0 elements (collapsible_panel, streaming_mode) only work with `"schema": "2.0"` cards.
 - Streaming cards use a single CardKit card for the message lifecycle: elements are dynamically created in event arrival order. When CardKit creation fails, the plugin yields to the Hermes Gateway default reply.
-- The follow-up drain hooks manage card lifecycle for Hermes's queued follow-up messages (triggered when `busy_text_mode: queue` or `busy_input_mode: queue`). `on_queued_followup_boundary` is injected at `was_interrupted = result.get("interrupted")` in `_run_agent` — it finalizes the current card and sets `response_previewed`/`already_sent` on the result dict before the drain loop processes the queued message. `on_queued_followup_result` is injected at `return _preserve_queued_followup_history_offset(...)` and uses `setdefault` to carry the deepest `_hermes_lark_completion_id` back through the recursive merge chain.
+- Follow-up completion runs in `_run_agent_deliver_first_response` before native delivery, setting `response_previewed`/`already_sent` without destroying attachment-bearing text. `on_queued_followup_result` runs after recursive completion and uses `setdefault` to preserve the deepest completion identity.
 - The COMPLETE hook uses `_lark_completion_id = agent_result.get('_hermes_lark_completion_id') or event.message_id` — in follow-up scenarios the deepest message_id propagates up via `on_queued_followup_result`, ensuring the correct card session is finalized. Non-follow-up scenarios fall back to `event.message_id`.
-- The background deliver hook (`on_background_deliver`) is injected in `_run_background_task` after `adapter.extract_images(response)`. It uses `ReplyMessage` API with `event_message_id` as anchor, so cards land in the correct topic. On success, `text_content` is cleared to avoid duplicate text delivery, while images and media files continue through the original Hermes loops. On failure, the original Hermes delivery logic runs as fallback.
+- Background delivery runs after `adapter.extract_images(response)` in `_run_background_task_inner`. On successful card delivery only text is cleared; native image/media delivery continues. Failed card delivery falls back to Hermes.
 - Commit messages: body should use bullet list format (unnumbered `- item`).

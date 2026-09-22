@@ -69,7 +69,6 @@ class StreamingController:
     _client: FeishuClient | None
     _cfg: Config
     _ensure_init: Callable[..., Coroutine[Any, Any, None]]
-    _cleanup: Callable[[str], None]
     _cleanup_session: Callable[[CardSession], None]
     _flush_deferred_background_reviews: Callable[[CardSession], None]
     _wait_for_card_creation: Callable[[CardSession], Coroutine[Any, Any, bool]]
@@ -85,17 +84,16 @@ class StreamingController:
 
     def _on_thinking_segment(self, session: CardSession, text: str) -> bool:
         segment_state = session.segment_state
-        if segment_state is None:
-            return False
         split = split_reasoning_text(text)
         reasoning = split.get("reasoning_text")
         answer = split.get("answer_text")
 
-        if reasoning and self._cfg.show_reasoning:
+        show_reasoning = bool(reasoning) and self._cfg.show_reasoning
+        if reasoning and show_reasoning:
             segment_state.on_reasoning_delta(reasoning)
         if answer:
             segment_state.on_answer_delta(answer)
-        if not (reasoning and self._cfg.show_reasoning) and not answer:
+        if not show_reasoning and not answer:
             return False
         self._schedule_flush(session)
         return True
@@ -105,8 +103,6 @@ class StreamingController:
         if session.state != SessionState.IDLE:
             return
         session.state = SessionState.CREATING
-        if session.segment_state is None:
-            session.segment_state = SegmentState()
 
         try:
             await self._ensure_init()
@@ -114,11 +110,7 @@ class StreamingController:
 
             reply_to_message_id = session.anchor_id or session.message_id
             card = build_streaming_card_v2(
-                show_tool_use=False,
-                show_reasoning=False,
-                show_streaming_element=False,
                 header_enabled=self._cfg.header_enabled,
-                text_size=self._cfg.body_text_size,
                 width_mode=self._cfg.width_mode,
             )
             card_id = await self._client.cardkit_create(card)
@@ -154,7 +146,7 @@ class StreamingController:
             session.flush.set_card_message_ready(True)
             if session.state == SessionState.CREATING:
                 session.state = SessionState.STREAMING
-            if session.segment_state and session.segment_state.has_dirty:
+            if session.segment_state.has_dirty:
                 self._schedule_flush(session)
             _logger.info(
                 "CardKit card created: msg=%s card_id=%s",
@@ -175,12 +167,11 @@ class StreamingController:
         if session.state.is_terminal or not session.card_id:
             return
         segment_state = session.segment_state
-        if segment_state is None:
-            return
 
         assert self._client is not None
         segments = segment_state.segments
         all_steps = session.tool_use.build_display_steps()
+        show_tool_use = self._cfg.show_tool_use
 
         # ── 步骤 1: batch_update — 按 segment 顺序处理结构性变更 ──
         actions: list[dict[str, Any]] = []
@@ -195,7 +186,7 @@ class StreamingController:
 
             # show_tool_use=False: 流式态跳过所有 TOOL segment 处理
             # （新建与 dirty 更新两条路径），只保留 reasoning/answer
-            if seg.type == SegmentType.TOOL and not self._cfg.show_tool_use:
+            if seg.type == SegmentType.TOOL and not show_tool_use:
                 if not seg.created:
                     seg.created = True  # 防止 next flush 再次进入 not created 分支
                 seg.dirty = False
@@ -560,11 +551,7 @@ class StreamingController:
         assert self._client is not None
         try:
             card = build_streaming_card_v2(
-                show_tool_use=False,
-                show_reasoning=False,
-                show_streaming_element=False,
                 header_enabled=self._cfg.header_enabled,
-                text_size=self._cfg.body_text_size,
                 width_mode=self._cfg.width_mode,
             )
             new_card_id = await self._client.cardkit_create(card)
@@ -594,7 +581,6 @@ class StreamingController:
         old_card_id = session.card_id
         assert old_card_id is not None
         segment_state = session.segment_state
-        assert segment_state is not None
         segments = segment_state.segments
         seal_start_idx = session.split_index
 
@@ -723,8 +709,7 @@ class StreamingController:
         is_aborted = session.state == SessionState.ABORTED
         all_tool_steps = session.tool_use.build_display_steps()
 
-        if segment_state is not None:
-            segment_state.finalize_segments(len(all_tool_steps))
+        segment_state.finalize_segments(len(all_tool_steps))
 
         active_segments = session.active_segments()
 
