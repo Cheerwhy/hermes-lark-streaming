@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.0] - 2026-09-22
+
+### 变更
+
+- 要求 Hermes `>= 0.21.1` 的 split gateway/cron 布局，移除旧的单文件注入路径。
+- 固定 Hermes 0.21.1 测试源码清单，复用 Git 忽略的本地缓存，并校验源文件哈希。
+- 精简流式卡片初始构建和会话清理逻辑，删除未使用的接口与分支。
+- 缓存 AST 和测试编译结果，降低兼容性测试耗时。
+
+### Changed
+
+- Require Hermes `>= 0.21.1` split gateway/cron layout and remove the legacy monolithic injection path.
+- Pin the Hermes 0.21.1 fixture manifest, reuse the Git-ignored local cache, and verify source hashes.
+- Simplify initial streaming-card construction and session cleanup by removing unused APIs and branches.
+- Cache AST indexes and compiled test fixtures to reduce compatibility-test time.
+
 ## [0.12.0] - 2026-07-31
 
 ### 新增
