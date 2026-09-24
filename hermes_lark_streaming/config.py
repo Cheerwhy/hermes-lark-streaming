@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,14 @@ import yaml
 
 DEFAULT_DOMAIN = "https://open.feishu.cn"  # SDK 根域名，Larksuite 用 https://open.larksuite.com
 LARK_DOMAIN = "https://open.larksuite.com"
+
+# Runtime-mutable settings (``display.show_reasoning`` / ``show_tool_use``) are read on
+# EVERY stream delta, and each read used to parse config.yaml from disk (~22 ms with
+# PyYAML's pure-Python scanner, holding the GIL). At a few deltas per second that stalls
+# the whole gateway process — every session's socket reads included. Cache the parse for
+# a short TTL and revalidate on (mtime_ns, size), so a live toggle still lands within a
+# second.
+_CONFIG_RELOAD_TTL_S = 1.0
 
 
 def hermes_home() -> Path:
@@ -40,6 +49,9 @@ class Config:
     def __init__(self, home: Path | None = None) -> None:
         self._home = Path(home) if home is not None else None
         self._raw: dict[str, Any] | None = None
+        self._reload_cache: dict[str, Any] | None = None
+        self._reload_cache_at = 0.0
+        self._reload_cache_key: tuple[str, int, int] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -241,9 +253,26 @@ class Config:
         return self._raw
 
     def _reload(self) -> dict[str, Any]:
-        """从磁盘重新读取配置（不更新缓存），供运行时可变的配置项使用."""
+        """从磁盘重新读取配置（短 TTL 缓存），供运行时可变的配置项使用.
+
+        该函数在**每个流式 delta** 上都会被调用（``show_reasoning`` /
+        ``show_tool_use``），而一次 ``yaml.safe_load`` 要 ~22ms —— 直接在热路径解析会
+        把整个网关进程（所有会话，GIL）拖住。这里缓存 1s，并用 (mtime_ns, size) 做失效
+        判据，所以 ``/reasoning`` 之类改配置的命令最迟 1s 生效。
+        """
         path = _config_path(self._home)
-        if path.exists():
-            text = path.read_text(encoding="utf-8")
-            return yaml.safe_load(text) or {}
-        return {}
+        try:
+            stat = path.stat()
+            key = (str(path), stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            self._reload_cache, self._reload_cache_at, self._reload_cache_key = {}, time.monotonic(), None
+            return {}
+        now = time.monotonic()
+        fresh = now - self._reload_cache_at < _CONFIG_RELOAD_TTL_S
+        if self._reload_cache is not None and self._reload_cache_key == key and fresh:
+            return self._reload_cache
+        text = path.read_text(encoding="utf-8")
+        self._reload_cache = yaml.safe_load(text) or {}
+        self._reload_cache_at = time.monotonic()
+        self._reload_cache_key = key
+        return self._reload_cache
