@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from hermes_lark_streaming.config import Config
 
@@ -363,3 +364,37 @@ def test_nested_lark_domain_uses_larksuite_url() -> None:
 
     with patch.dict(os.environ, {}, clear=True):
         assert cfg.feishu_base_url == "https://open.larksuite.com"
+
+
+class TestReloadCache:
+    """``_reload`` runs on every stream delta — it must not re-parse config.yaml each time."""
+
+    @staticmethod
+    def _home(tmp_path, text: str):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(text, encoding="utf-8")
+        return home
+
+    def test_repeated_reads_parse_once(self, tmp_path) -> None:
+        home = self._home(tmp_path, "display:\n  show_reasoning: true\n")
+        cfg = Config(home=home)
+        with patch("hermes_lark_streaming.config.yaml.safe_load", wraps=yaml.safe_load) as spy:
+            for _ in range(25):
+                assert cfg.show_reasoning is True
+        assert spy.call_count == 1
+
+    def test_edit_takes_effect_after_ttl(self, tmp_path, monkeypatch) -> None:
+        home = self._home(tmp_path, "display:\n  show_reasoning: false\n")
+        cfg = Config(home=home)
+        assert cfg.show_reasoning is False
+        monkeypatch.setattr("hermes_lark_streaming.config._CONFIG_RELOAD_TTL_S", 0.0)
+        (home / "config.yaml").write_text("display:\n  show_reasoning: true\n", encoding="utf-8")
+        assert cfg.show_reasoning is True
+
+    def test_missing_config_file_returns_empty(self, tmp_path) -> None:
+        home = tmp_path / "empty"
+        home.mkdir()
+        cfg = Config(home=home)
+        assert cfg.show_reasoning is False
+        assert cfg.show_tool_use is True
