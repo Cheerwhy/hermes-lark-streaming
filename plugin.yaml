@@ -1,0 +1,24 @@
+name: hermes-lark-streaming
+label: Feishu / Lark Streaming Cards
+version: "0.14.0"
+kind: platform
+requires_hermes: ">=0.22.0"
+description: "In-process CardKit streaming platform for Hermes >= 0.22.0"
+author: Cheerwhy
+python_dependencies:
+  - "lark-oapi>=1.6.4"
+  - "PyYAML>=6.0"
+provides_hooks:
+  - on_stream_start
+  - on_stream_delta
+  - pre_tool_call
+  - post_tool_call
+  - post_api_request
+  - on_session_end
+requires_env:
+  - name: FEISHU_APP_ID
+    description: Feishu / Lark App ID
+    password: false
+  - name: FEISHU_APP_SECRET
+    description: Feishu / Lark App Secret
+    password: true

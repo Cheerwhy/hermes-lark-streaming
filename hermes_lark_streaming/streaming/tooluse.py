@@ -66,7 +66,7 @@ _AUTH_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 _SECRET_FLAG_RE = re.compile(
-    r'((?:^|[\s"\'`])(--?[A-Za-z0-9][A-Za-z0-9-]*)(=|\s+)("(?:[^"]*)"|\'(?:[^\']*)\'|[^\s"\'`]+))'
+    r'(^|[\s"\'`])(--?[A-Za-z0-9][A-Za-z0-9-]*)(=|\s+)("(?:[^"]*)"|\'(?:[^\']*)\'|[^\s"\'`]+)'
 )
 
 
@@ -246,27 +246,22 @@ class ToolUseTracker:
         self._session: ToolSession | None = None
         self._max_steps = max_steps
 
-    def record_start(self, name: str, detail: str = "") -> None:
+    def record_start(self, name: str, detail: str = "") -> ToolStep | None:
         if self._session is None:
             self._session = ToolSession()
         if len(self._session.steps) >= self._max_steps:
-            return
-        self._session.steps.append(
-            ToolStep(
-                name=name,
-                status=ToolStatus.RUNNING,
-                detail=detail,
-                started_at=time.time(),
-            )
-        )
+            return None
+        step = ToolStep(name=name, status=ToolStatus.RUNNING, detail=detail, started_at=time.time())
+        self._session.steps.append(step)
+        return step
 
-    def record_end(self, name: str, *, error: str = "", output: str = "") -> None:
-        """通过名字匹配最近的一个 running 步骤来结束."""
+    def record_end(self, name: str, *, error: str = "", output: str = "", target: ToolStep | None = None) -> None:
+        """优先结束指定步骤，未指定时匹配最近的同名 running 步骤."""
         if self._session is None:
             return
         desc = _resolve_tool_descriptor(name)
         sanitizer = desc.get("sanitizer") if desc else None
-        for step in reversed(self._session.steps):
+        for step in ([target] if target is not None else reversed(self._session.steps)):
             if step.name == name and step.status == ToolStatus.RUNNING:
                 step.status = ToolStatus.ERROR if error else ToolStatus.SUCCESS
                 step.error = error

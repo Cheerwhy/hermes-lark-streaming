@@ -8,8 +8,6 @@ REASONING_PREFIX = "Reasoning:\n"
 
 _REASONING_TAG = r"(?:think(?:ing)?|thought|antthinking)"
 _REASONING_TAG_RE = re.compile(r"<\s*(/?)\s*" + _REASONING_TAG + r"\s*>", re.IGNORECASE)
-_REASONING_OPEN_RE = re.compile(r"<\s*" + _REASONING_TAG + r"\s*>", re.IGNORECASE)
-_REASONING_CLOSE_RE = re.compile(r"<\s*/\s*" + _REASONING_TAG + r"\s*>", re.IGNORECASE)
 
 
 def split_reasoning_text(text: str | None) -> dict[str, str | None]:
@@ -46,14 +44,10 @@ def extract_thinking_content(text: str) -> str:
 
 
 def strip_reasoning_tags(text: str) -> str:
-    result = _REASONING_OPEN_RE.sub(
-        lambda _: "",
-        _REASONING_CLOSE_RE.sub("", text),
-    )
     result = re.sub(
         r"<\s*" + _REASONING_TAG + r"\s*>[\s\S]*?<\s*/\s*" + _REASONING_TAG + r"\s*>",
         "",
-        result,
+        text,
         flags=re.IGNORECASE,
     )
     result = re.sub(
@@ -62,6 +56,7 @@ def strip_reasoning_tags(text: str) -> str:
         result,
         flags=re.IGNORECASE,
     )
+    result = _REASONING_TAG_RE.sub("", result)
     if result.strip().startswith(REASONING_PREFIX):
         result = ""
     return result

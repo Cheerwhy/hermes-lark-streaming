@@ -1,39 +1,45 @@
 name: Tests
-
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
-
+  workflow_call:
 permissions:
   contents: read
-
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        hermes:
+          - e06df9c2eae6901f4c88f464e0ae6e753c0428b8 # v0.22.0 minimum
+          - bf0203a794a07aac3ff764972ab9087baa4e4f4e # v0.22.5
     steps:
       - uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/checkout@v6
         with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
-
-      - name: Run ruff
-        run: python -m ruff check .
-
-      - name: Run mypy
-        run: python -m mypy hermes_lark_streaming/
-
-      - name: Cache pinned Hermes sources
-        uses: actions/cache@v4
+          repository: NousResearch/hermes-agent
+          ref: ${{ matrix.hermes }}
+          path: .hermes-test-source
+          persist-credentials: false
+      - uses: actions/setup-python@v6
         with:
-          path: tests/samples
-          key: hermes-samples-${{ hashFiles('tests/hermes_sources.json') }}
-
-      - name: Run tests
-        run: python -m pytest tests/ -v
+          python-version: '3.14'
+      - name: Install Hermes and plugin in isolated environment
+        run: |
+          python -m pip install -e .hermes-test-source
+          python -m pip install -e '.[dev]' build
+      - name: Lint and type check
+        run: |
+          python -m ruff check hermes_lark_streaming tests scripts __init__.py
+          python -m mypy hermes_lark_streaming scripts
+      - name: Native interface and rendering tests
+        env:
+          HERMES_HOME: ${{ runner.temp }}/hermes-test-home
+        run: |
+          python -m pytest tests -q
+          python -m hermes_lark_streaming verify
+          python -m hermes_cli.main plugins validate . --json
+      - name: Build distribution
+        run: python -m build

@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
-from concurrent.futures import Future as ConcurrentFuture
 from enum import StrEnum
-from threading import Lock
 from typing import TYPE_CHECKING, Any
 
 from .flush import CARDKIT_MS, FlushController
@@ -23,7 +20,6 @@ class SessionState(StrEnum):
     IDLE = "idle"
     CREATING = "creating"
     STREAMING = "streaming"
-    CLARIFY_PAUSED = "clarify_paused"
     COMPLETED = "completed"
     FAILED = "failed"
     ABORTED = "aborted"
@@ -41,17 +37,11 @@ class CardSession:
     """单条消息的卡片会话状态."""
 
     __slots__ = (
-        "_loop",
         "anchor_id",
         "card_id",
         "card_msg_id",
         "chat_id",
-        "clarify_pending_split",
-        "create_task",
         "created_at",
-        "deferred_background_review_closed",
-        "deferred_background_review_lock",
-        "deferred_background_reviews",
         "element_count",
         "flush",
         "footer",
@@ -77,7 +67,6 @@ class CardSession:
         self.anchor_id: str | None = None
         self.chat_id = chat_id
         self.session_key: str | None = None
-        self.create_task: asyncio.Future[Any] | ConcurrentFuture | None = None
         self.state = SessionState.IDLE
         self.card_msg_id: str | None = None
         self.card_id: str | None = None
@@ -85,11 +74,7 @@ class CardSession:
         self.flush = FlushController(throttle_ms=CARDKIT_MS, loop=loop)
         self.footer: dict[str, Any] = {}
         self.sequence = 1
-        self._loop = loop
         self.created_at = time.time()
-        self.deferred_background_review_closed = False
-        self.deferred_background_reviews: list[tuple[str, Callable[[str], Any]]] = []
-        self.deferred_background_review_lock = Lock()
 
         self.guard = UnavailableGuard(
             reply_to_message_id=message_id,
@@ -102,7 +87,6 @@ class CardSession:
         self.element_count: int = 0
         self.split_disabled = False
         self.split_index: int = 0
-        self.clarify_pending_split: bool = False
 
     @property
     def has_card(self) -> bool:
@@ -116,4 +100,4 @@ class CardSession:
         self.state = SessionState.FAILED
 
     def active_segments(self) -> list[Segment]:
-        return self.segment_state.segments[self.split_index:]
+        return self.segment_state.segments[self.split_index :]

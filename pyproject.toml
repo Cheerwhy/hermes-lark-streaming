@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-lark-streaming"
-version = "0.13.0"
+version = "0.14.0"
 description = "Real-time streaming card plugin for Hermes Gateway via Feishu/Lark CardKit v2.0"
 readme = "README.md"
 requires-python = ">=3.11"
 keywords = ["Hermes", "Feishu", "Lark", "streaming-card"]
 dependencies = [
-  "lark-oapi>=1.4.0",
+  "lark-oapi>=1.6.4",
   "PyYAML>=6.0",
 ]
 
@@ -35,7 +35,6 @@ include = ["hermes_lark_streaming*"]
 [tool.ruff]
 target-version = "py311"
 line-length = 120
-exclude = ["tests/samples"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
@@ -49,7 +48,16 @@ python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 module = "lark_oapi.*"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["agent.i18n", "gateway.*", "hermes_cli.*", "hermes_constants", "plugins.platforms.feishu.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]

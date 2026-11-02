@@ -25,6 +25,8 @@ _T: dict[str, tuple[str, str]] = {
     "thinking_panel": ("Thinking", "思考中"),
     "thought_for": ("Thought for {}", "思考了 {}"),
     "done": ("Done.", "完成。"),
+    "clarify_answered": ("💬 Received your choice", "💬 已收到你的选择"),
+    "clarify_ended": ("💬 Clarification ended", "💬 本次澄清已结束"),
 }
 
 

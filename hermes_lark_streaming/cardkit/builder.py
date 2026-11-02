@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
 from typing import Any
 
 from ..streaming.segments import Segment, SegmentType
@@ -16,7 +15,6 @@ from .markdown import (
 )
 
 STREAMING_ELEMENT_ID = "streaming_content"
-REASONING_ELEMENT_ID = "reasoning_content"
 REASONING_TEXT_ELEMENT_ID = "reasoning_text"
 TOOL_PANEL_ELEMENT_ID = "tool_panel"
 _LOADING_ELEMENT_ID = "loading_icon"
@@ -352,23 +350,25 @@ def _render_footer_field(
         v = data.get("model") or None
         return v, v
 
+    if name == "context":
+        used = data.get("prompt_tokens")
+        if type(used) is not int or used < 0:
+            return None, None
+        maximum = data.get("context_length")
+        if type(maximum) is not int or maximum <= 0:
+            return None, None
+        used = min(used, maximum)
+        val = f"{_compact(used)}/{_compact(maximum)} ({round(used / maximum * 100)}%)"
+        if show_label:
+            return _T[name][0].format(val), _T[name][1].format(val)
+        return val, val
+
     if name == "tokens":
         input_t = data.get("input_tokens", 0) or 0
         output_t = data.get("output_tokens", 0) or 0
         if input_t or output_t:
             v = f"↑ {_compact(input_t)} ↓ {_compact(output_t)}"
             return v, v
-        return None, None
-
-    if name == "context":
-        used = data.get("context_used", 0) or 0
-        max_c = data.get("context_max", 0) or 0
-        if max_c:
-            pct = int(used / max_c * 100)
-            val = f"{_compact(used)}/{_compact(max_c)} ({pct}%)"
-            if show_label:
-                return _T["context"][0].format(val), _T["context"][1].format(val)
-            return val, val
         return None, None
 
     return None, None
@@ -501,58 +501,19 @@ def build_complete_card(
     return card
 
 
-def _format_run_time(run_time: str) -> str:
-    """将 ISO 时间戳格式化为可读日期时间，失败则原样返回."""
-    if not run_time:
-        return ""
-    try:
-        dt = datetime.fromisoformat(run_time)
-        return dt.strftime("%Y-%m-%d %H:%M")
-    except (ValueError, TypeError):
-        return run_time
-
-
-def build_cron_card(
-    content: str, *, task_name: str = "", run_time: str = ""
-) -> dict[str, Any]:
-    """Cron 推送用的极简静态卡片 — schema 2.0，可选 header + markdown 内容."""
+def build_static_card(content: str) -> dict[str, Any]:
+    """普通回复、Cron 和后台通知共用的静态卡片."""
     card: dict[str, Any] = {
         "schema": "2.0",
         "config": {"wide_screen_mode": True, "locales": _LOCALES},
         "body": {"elements": []},
     }
-    header_parts = [p for p in (task_name, _format_run_time(run_time)) if p]
-    if header_parts:
-        card["header"] = {
-            "title": {"tag": "lark_md", "content": ":Alarm: " + " · ".join(header_parts)},
-            "template": "blue",
-        }
     if not content.strip():
         return card
     summary = content[:120].replace("\n", " ").replace("```", "").strip()
     if summary:
         card["config"]["summary"] = {"content": summary}
     for chunk in _split_long_text(optimize_markdown_style(content)):
-        if chunk.strip():
-            card["body"]["elements"].append({"tag": "markdown", "content": chunk})
-    return card
-
-
-def build_background_card(preview: str, content: str) -> dict[str, Any]:
-    """Background 任务完成推送卡片 — schema 2.0，header + markdown."""
-    card: dict[str, Any] = {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True, "locales": _LOCALES},
-        "header": {
-            "title": {"tag": "plain_text", "content": f"✅ Background: \"{preview}\""},
-        },
-        "body": {"elements": []},
-    }
-    body = content if content.strip() else "(No response generated)"
-    summary = body[:120].replace("\n", " ").replace("```", "").strip()
-    if summary:
-        card["config"]["summary"] = {"content": summary}
-    for chunk in _split_long_text(optimize_markdown_style(body)):
         if chunk.strip():
             card["body"]["elements"].append({"tag": "markdown", "content": chunk})
     return card

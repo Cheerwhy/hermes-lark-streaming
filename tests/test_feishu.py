@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -40,6 +41,7 @@ def _client_with(**methods: AsyncMock) -> FeishuClient:
                 message=SimpleNamespace(
                     acreate=methods.get("create_message", AsyncMock()),
                     areply=methods.get("reply", AsyncMock()),
+                    apatch=methods.get("patch", AsyncMock()),
                 ),
             ),
         ),
@@ -133,3 +135,77 @@ async def test_cardkit_create_does_not_retry_non_transient_error() -> None:
         await client.cardkit_create({"schema": "2.0"})
 
     assert create.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_card_message_update_uses_patch_api() -> None:
+    patch_message = AsyncMock(return_value=_Resp(ok=True))
+    client = _client_with(patch=patch_message)
+    await client.update_card_message("message", {"schema": "2.0", "body": {"elements": []}})
+    request = patch_message.call_args.args[0]
+    assert request.message_id == "message"
+    assert json.loads(request.request_body.content)["schema"] == "2.0"
+
+
+@pytest.mark.asyncio
+async def test_batch_retry_after_ambiguous_success_keeps_uuid_and_does_not_duplicate(tmp_path, monkeypatch):
+    """首请求已执行但响应超时；同序号冲突后仍用同一幂等 ID 恢复."""
+    import asyncio
+
+    from hermes_lark_streaming.config import Config
+    from hermes_lark_streaming.controller import StreamCardController
+    from hermes_lark_streaming.streaming.session import CardSession
+
+    applied = set()
+    requests = []
+
+    async def server(request):
+        body = request.request_body
+        requests.append((body.sequence, body.uuid, body.actions))
+        if len(requests) == 1:
+            applied.add(body.uuid)
+            return _Resp(ok=False, code=2200)
+        if len(requests) == 2:
+            return _Resp(ok=False, code=300317)
+        applied.add(body.uuid)
+        return _Resp(ok=True)
+
+    monkeypatch.setattr("hermes_lark_streaming.feishu.asyncio.sleep", AsyncMock())
+    client = _client_with(batch_update=AsyncMock(side_effect=server))
+    controller = StreamCardController(Config(tmp_path), client)
+    session = CardSession("in", "chat", asyncio.get_running_loop())
+    actions = [{"type": "add_elements", "params": {"elements": [{"tag": "markdown", "element_id": "a"}]}}]
+    await controller._cardkit_call(session, client.cardkit_batch_update, "card", actions)
+    assert [r[0] for r in requests] == [2, 2, 3]
+    assert len(applied) == 1 and next(iter(applied))
+    assert len({r[2] for r in requests}) == 1
+    assert session.sequence == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,sdk_method,args", [
+    ("cardkit_update", "card_update", ("card", {})),
+    ("cardkit_close_streaming", "settings", ("card",)),
+    ("cardkit_batch_update", "batch_update", ("card", [])),
+])
+async def test_cardkit_uuid_survives_transient_retries(method, sdk_method, args, monkeypatch):
+    monkeypatch.setattr("hermes_lark_streaming.feishu.asyncio.sleep", AsyncMock())
+    sdk = AsyncMock(side_effect=[_Resp(ok=False, code=2200), _Resp(ok=True)])
+    client = _client_with(**{sdk_method: sdk})
+    await getattr(client, method)(*args, sequence=5, request_id="same-logical-operation")
+    bodies = [c.args[0].request_body for c in sdk.await_args_list]
+    assert [b.sequence for b in bodies] == [5, 5]
+    assert [b.uuid for b in bodies] == ["same-logical-operation"] * 2
+
+
+@pytest.mark.asyncio
+async def test_stream_uuid_survives_sync_sdk_transient_retries(monkeypatch):
+    from unittest.mock import Mock
+
+    monkeypatch.setattr("hermes_lark_streaming.feishu.asyncio.sleep", AsyncMock())
+    sdk = Mock(side_effect=[_Resp(ok=False, code=2200), _Resp(ok=True)])
+    client = _client_with(card_element_content=sdk)
+    await client.cardkit_stream_element("card", "answer", "text", sequence=5, request_id="stream-operation")
+    bodies = [c.args[0].request_body for c in sdk.call_args_list]
+    assert [b.sequence for b in bodies] == [5, 5]
+    assert [b.uuid for b in bodies] == ["stream-operation"] * 2

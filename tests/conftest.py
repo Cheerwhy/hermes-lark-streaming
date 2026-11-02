@@ -1,19 +1,13 @@
-"""Shared isolated filesystem fixtures; pinned sources are cached in memory."""
-
-from pathlib import Path
+"""Hermes 集成测试使用独立临时配置，不读取用户的运行配置."""
 
 import pytest
-from hermes_sources import TREE_FILES, source_at
 
 
-def pytest_addoption(parser):
-    parser.addoption("--local-hermes", action="store_true", help="Also verify an isolated copy of local Hermes")
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    from hermes_lark_streaming.streaming import unavailable_guard
 
-
-@pytest.fixture
-def hermes_tree(tmp_path: Path) -> Path:
-    for relative in TREE_FILES:
-        path = tmp_path / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(source_at(relative), encoding="utf-8")
-    return tmp_path
+    monkeypatch.setattr(unavailable_guard, "_unavailable_cache", {})
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("FEISHU_APP_ID", "test-app")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "test-secret")

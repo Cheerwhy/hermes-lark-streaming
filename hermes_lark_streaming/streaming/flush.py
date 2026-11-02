@@ -66,6 +66,7 @@ class FlushController:
         if self._completed or not self._card_message_ready:
             return
         self._cancel_timer()
+        await self.wait_for_flush()
         await self._do_flush(do_flush)
 
     async def wait_for_flush(self) -> None:

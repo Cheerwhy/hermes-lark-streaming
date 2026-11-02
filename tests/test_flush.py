@@ -336,3 +336,29 @@ class TestSetThrottle:
         ctrl = _make_async()
         ctrl.set_throttle(500.0)
         assert ctrl.throttle_ms == 500.0
+
+
+@pytest.mark.asyncio
+async def test_flush_now_waits_for_active_flush_before_delivering_new_content() -> None:
+    ctrl = _make_async()
+    ctrl.set_card_message_ready(True)
+    entered, release = asyncio.Event(), asyncio.Event()
+    delivered: list[str] = []
+
+    async def slow_flush() -> None:
+        entered.set()
+        await release.wait()
+        delivered.append("old")
+
+    async def new_flush() -> None:
+        delivered.append("new")
+
+    task = asyncio.create_task(ctrl._do_flush(slow_flush))
+    await entered.wait()
+    immediate = asyncio.create_task(ctrl.flush_now(new_flush))
+    await asyncio.sleep(0)
+    assert not immediate.done()
+    release.set()
+    await asyncio.gather(task, immediate)
+    assert delivered == ["old", "new"]
+    ctrl.mark_completed()

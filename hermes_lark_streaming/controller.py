@@ -1,728 +1,308 @@
-"""StreamCardController — 流式卡片主控制器（单例）."""
+"""实例作用域的卡片生命周期，与 Hermes 源码及投递内部变量无关."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-import threading
 import time
-from collections.abc import Callable, Coroutine, Iterator
-from concurrent.futures import Future as ConcurrentFuture
-from contextlib import contextmanager
-from pathlib import Path
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from typing import Any
 
-from .config import Config, hermes_home
-from .feishu import (
-    FeishuClient,
-    FeishuClientConfig,
-)
-from .streaming.controller import StreamingController
-from .streaming.segments import SegmentType
-from .streaming.session import CardSession, SessionState
-from .streaming.text import strip_reasoning_tags
+from agent.i18n import get_language, t
 
-_logger = logging.getLogger("hermes_lark_streaming")
-_CARD_CREATION_WAIT_SEC = 10.0
+from .cardkit.i18n import _t
+from .config import Config
+from .feishu import FeishuClient
+from .streaming.controller import StreamingController
+from .streaming.segments import Segment, SegmentType
+from .streaming.session import CardSession, SessionState
+from .streaming.tooluse import ToolStatus, ToolStep, redact_inline_secrets
+
+_logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Turn:
+    session: CardSession
+    source_id: str
+    text: str = ""
+    closing: bool = False
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    tools: dict[str, ToolStep] = field(default_factory=dict)
+    observer_turn_id: str = ""
+    usage_ids: set[str] = field(default_factory=set)
+    clarify_prompt: Segment | None = None
 
 
 class StreamCardController(StreamingController):
-    """流式卡片控制器 — 管理多条消息的卡片生命周期."""
+    """一个适配器持有一个控制器，所有状态只能在所属事件循环访问."""
 
-    def __init__(self, profile_home: Path | None = None) -> None:
-        self._profile_home = (profile_home or hermes_home()).resolve()
-        self._cfg = Config(self._profile_home)
-        self._client: FeishuClient | None = None
-        self._sessions: dict[str, CardSession] = {}
-        self._session_keys: dict[str, CardSession] = {}
-        self._interrupt_map: dict[str, str] = {}
-        self._initialized = False
-        self._init_lock = threading.Lock()
-        self._session_ttl = self._cfg.card_duration_sec
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._text_fallback_needed: set[str] = set()
-        self._text_fallback_aliases: dict[str, set[str]] = {}
-        self._unscoped_enabled: bool | None = None
-
-    @property
-    def enabled(self) -> bool:
-        unscoped = self._needs_fallback_scope()
-        if unscoped and self._unscoped_enabled is not None:
-            return self._unscoped_enabled
-        with self._credential_scope():
-            enabled = self._cfg.enabled and bool(self._cfg.feishu_app_id or self._cfg.env_app_id)
-        if unscoped and enabled:
-            self._unscoped_enabled = True
-        return enabled
-
-    @staticmethod
-    def _needs_fallback_scope() -> bool:
-        try:
-            from agent.secret_scope import current_secret_scope, is_multiplex_active  # type: ignore[import-not-found]
-        except ImportError:
-            return False
-        return is_multiplex_active() and current_secret_scope() is None
-
-    @contextmanager
-    def _credential_scope(self) -> Iterator[None]:
-        try:
-            from agent.secret_scope import (  # type: ignore[import-not-found]
-                build_profile_secret_scope,
-                current_secret_scope,
-                is_multiplex_active,
-                reset_secret_scope,
-                set_secret_scope,
-            )
-        except ImportError:
-            yield
-            return
-        if not is_multiplex_active() or current_secret_scope() is not None:
-            yield
-            return
-        token = set_secret_scope(build_profile_secret_scope(self._profile_home))
-        try:
-            yield
-        finally:
-            reset_secret_scope(token)
-
-    async def _ensure_init(self) -> None:
-        if self._initialized:
-            return
-        with self._init_lock:
-            if self._initialized:
-                return
-            with self._credential_scope():
-                app_id = self._cfg.feishu_app_id or self._cfg.env_app_id
-                app_secret = self._cfg.feishu_app_secret or self._cfg.env_app_secret
-                if not app_id or not app_secret:
-                    raise RuntimeError("feishu credentials not configured")
-                self._client = FeishuClient(
-                    FeishuClientConfig(
-                        app_id=app_id,
-                        app_secret=app_secret,
-                        base_url=self._cfg.feishu_base_url,
-                    )
-                )
-            self._initialized = True
-
-    def _get_loop(self) -> asyncio.AbstractEventLoop | None:
-        """获取事件循环，缓存以便跨线程复用."""
-        try:
-            loop = asyncio.get_running_loop()
-            self._loop = loop
-            return loop
-        except RuntimeError:
-            pass
-        if self._loop is not None and not self._loop.is_closed():
-            return self._loop
-        return None
-
-    def _get_active_session(self, message_id: str) -> CardSession | None:
-        """获取非终态的活跃 session，不存在或已终态返回 None."""
-        session = self._sessions.get(message_id)
-        if session is None or session.state.is_terminal:
-            return None
-        return session
-
-    def _fire_and_forget(
-        self,
-        coro: Coroutine[Any, Any, Any],
-        loop: asyncio.AbstractEventLoop,
-    ) -> asyncio.Future[Any] | ConcurrentFuture | None:
-        try:
-            task = loop.create_task(coro)
-            task.add_done_callback(self._on_bg_task_done)
-            return task
-        except RuntimeError:
-            try:
-                fut = asyncio.run_coroutine_threadsafe(coro, loop)
-                fut.add_done_callback(self._on_bg_task_done)
-                return fut
-            except Exception:
-                _logger.debug("fire_and_forget failed", exc_info=True)
-                return None
-
-    def on_message_started(
-        self,
-        *,
-        message_id: str | None,
-        chat_id: str,
-        anchor_id: str | None = None,
-        session_key: str | None = None,
-    ) -> None:
-        """消息处理开始 — 创建会话 + 发占位卡片."""
-        if not self.enabled:
-            return
-        if not message_id:
-            _logger.warning("on_message_started: missing message_id, chat=%s", chat_id[:12])
-            return
-        if message_id in self._sessions:
-            return
-
-        self._prune_stale_sessions()
-
-        loop = self._get_loop()
-        if loop is None:
-            _logger.warning("no event loop available, skipping: msg=%s", message_id[:12])
-            return
-        session = CardSession(message_id, chat_id, loop)
-        session.session_key = session_key
-        self._sessions[message_id] = session
-        if session_key:
-            self._session_keys[session_key] = session
-        if anchor_id and anchor_id != message_id:
-            session.anchor_id = anchor_id
-            self._sessions[anchor_id] = session
-        _logger.info("session created: msg=%s chat=%s anchor=%s", message_id[:12], chat_id[:12], (anchor_id or "")[:12])
-
-        session.create_task = self._fire_and_forget(self._do_create_card(session), loop)
-
-    def _mark_text_fallback_needed(self, session: CardSession) -> None:
-        keys = {session.message_id}
-        if session.anchor_id:
-            keys.add(session.anchor_id)
-        self._text_fallback_needed.update(keys)
-        for key in keys:
-            self._text_fallback_aliases[key] = set(keys)
-
-    def consume_text_fallback(self, message_id: str) -> bool:
-        """Return whether gateway should undo already_sent and deliver plain text."""
-        if message_id not in self._text_fallback_needed:
-            return False
-        keys = self._text_fallback_aliases.pop(message_id, {message_id})
-        for key in keys:
-            self._text_fallback_needed.discard(key)
-            self._text_fallback_aliases.pop(key, None)
-        return True
-
-    def on_thinking(self, *, message_id: str, text: str) -> bool:
-        """思考内容增量."""
-        if not self.enabled:
-            return False
-        session = self._get_active_session(message_id)
-        if session is None or session.guard.should_skip("on_thinking"):
-            return False
-
-        return self._on_thinking_segment(session, text)
-
-    def on_reasoning(self, *, message_id: str, text: str) -> bool:
-        """Native model reasoning delta (incremental append)."""
-        if not self.enabled:
-            return False
-        if not self._cfg.show_reasoning:
-            return False
-        session = self._get_active_session(message_id)
-        if session is None or session.guard.should_skip("on_reasoning"):
-            return False
-
-        session.segment_state.on_reasoning_delta(text)
-        self._schedule_flush(session)
-        return True
-
-    def on_tool_update(
-        self,
-        *,
-        message_id: str,
-        tool_name: str,
-        status: str,
-        detail: str = "",
-    ) -> bool:
-        """工具调用事件."""
-        if not self.enabled:
-            return False
-        session = self._get_active_session(message_id)
-        if session is None or session.guard.should_skip("on_tool_update"):
-            return False
-
-        if status in ("running", "started", "tool.started"):
-            session.tool_use.record_start(tool_name, detail)
-        else:
-            is_error = status in ("error", "failed")
-            session.tool_use.record_end(
-                tool_name,
-                error=detail if is_error else "",
-                output="" if is_error else detail,
-            )
-            # clarify 工具 ended 且有待封卡标志 → 封旧卡 + 建新卡
-            if session.clarify_pending_split:
-                if tool_name and tool_name.strip().lower() == "clarify":
-                    session.clarify_pending_split = False
-                    self._schedule_clarify_split(session)
-                else:
-                    # pending 标志残留但工具名不匹配（如上游改名）——记录以便排查，
-                    # 避免切卡静默失效。
-                    _logger.warning(
-                        "clarify_pending_split set but tool '%s' did not match, msg=%s",
-                        tool_name,
-                        session.message_id[:12],
-                    )
-
-        session.segment_state.on_tool_event(len(session.tool_use.build_display_steps()))
-        self._schedule_flush(session)
-        return True
-
-    def _schedule_clarify_split(self, session: CardSession) -> None:
-        """封旧卡 + 建新卡（clarify 工具 ended 后触发）。"""
-        loop = self._get_loop()
-        if loop is None:
-            return
-        future: ConcurrentFuture | None = None
-        try:
-            future = asyncio.run_coroutine_threadsafe(
-                self._do_clarify_split(session), loop,
-            )
-            # 预算 = 卡片创建等待 + seal/建卡余量
-            future.result(timeout=_CARD_CREATION_WAIT_SEC * 2 + 30)
-        except Exception:
-            _logger.warning(
-                "clarify_split failed or timed out, msg=%s",
-                session.message_id[:12],
-                exc_info=True,
-            )
-            # 取消仍在运行的切卡协程，避免与后续 flush 重叠。
-            if future is not None and not future.done():
-                future.cancel()
-
-    def on_answer(self, *, message_id: str, text: str) -> bool:
-        """答案文本增量（流式）."""
-        if not self.enabled:
-            return False
-        session = self._get_active_session(message_id)
-        if session is None or session.guard.should_skip("on_answer"):
-            return False
-
-        answer_text = strip_reasoning_tags(text)
-        if not answer_text:
-            return False
-
-        session.segment_state.on_answer_delta(answer_text)
-        self._schedule_flush(session)
-        return True
-
-    def on_aborted(self, *, message_id: str) -> None:
-        """用户 /stop 导致消息被中断."""
-        if not self.enabled:
-            return
-        session = self._get_active_session(message_id)
-        if session is None:
-            return
-
-        session.state = SessionState.ABORTED
-        session.flush.mark_completed()
-        _logger.info("on_aborted: msg=%s state=ABORTED", message_id[:12])
-
-        self._complete_session(session)
-
-    async def on_session_aborted(self, *, session_key: str) -> bool:
-        """Terminate the active card bound to a Hermes session key."""
-        if not self.enabled or not session_key:
-            return False
-        session = self._session_keys.pop(session_key, None)
-        if session is None or session.state.is_terminal:
-            return False
-
-        session.state = SessionState.ABORTED
-        session.flush.mark_completed()
-        _logger.info("on_session_aborted: msg=%s state=ABORTED", session.message_id[:12])
-
-        return await self._complete_session_after_creation(session)
-
-    def on_interrupted(
-        self,
-        *,
-        old_message_id: str,
-        new_message_id: str,
-        chat_id: str,
-        anchor_id: str | None = None,
-        session_key: str | None = None,
-    ) -> None:
-        """用户发送新消息导致前一条消息被中断 — abort A + create B."""
-        if not self.enabled:
-            return
-
-        old_session = self._get_active_session(old_message_id)
-        session_key = session_key or (old_session.session_key if old_session is not None else None)
-        if old_session is not None:
-            old_session.state = SessionState.ABORTED
-            old_session.flush.mark_completed()
-            _logger.info(
-                "on_interrupted: abort old msg=%s",
-                old_message_id[:12],
-            )
-            self._complete_session(old_session)
-
-        existing = self._sessions.get(new_message_id)
-        if existing is None or existing.state.is_terminal:
-            loop = self._get_loop()
-            if loop is not None:
-                reply_anchor_id = anchor_id if anchor_id and anchor_id != new_message_id else None
-                session = CardSession(new_message_id, chat_id, loop)
-                session.anchor_id = reply_anchor_id
-                session.session_key = session_key
-                self._sessions[new_message_id] = session
-                if session_key:
-                    self._session_keys[session_key] = session
-                if reply_anchor_id:
-                    self._sessions[reply_anchor_id] = session
-                _logger.info(
-                    "on_interrupted: create new msg=%s chat=%s anchor=%s",
-                    new_message_id[:12],
-                    chat_id[:12],
-                    (reply_anchor_id or new_message_id)[:12],
-                )
-                session.create_task = self._fire_and_forget(self._do_create_card(session), loop)
-
-        self._interrupt_map[old_message_id] = new_message_id
-        for key, val in list(self._interrupt_map.items()):
-            if val == old_message_id:
-                self._interrupt_map[key] = new_message_id
-
-    def on_clarify_enter(
-        self,
-        *,
-        message_id: str,
-        chat_id: str | None = None,
-        session_key: str | None = None,
-    ) -> None:
-        """clarify 进入：仅暂停 flush，等 tool.completed 再封卡（避免工具状态卡在 running）。"""
-        if not self.enabled:
-            return
-        session = self._get_active_session(message_id)
-        if session is None or session.state != SessionState.STREAMING:
-            return
-        session.state = SessionState.CLARIFY_PAUSED  # 暂停 flush，保留当前卡
-
-    def on_clarify_exit(
-        self,
-        *,
-        message_id: str,
-        chat_id: str | None = None,
-        session_key: str | None = None,
-    ) -> None:
-        """clarify 退出：标记待封卡，恢复 STREAMING，等 tool.completed 触发切卡。"""
-        if not self.enabled:
-            return
-        session = self._sessions.get(message_id)
-        if session is None or session.state != SessionState.CLARIFY_PAUSED:
-            return  # 已被 interrupt 接管 / enter 未生效
-        session.clarify_pending_split = True
-        session.state = SessionState.STREAMING  # 让 tool.completed 能更新卡片
-
-    async def on_completed_wait(
-        self,
-        *,
-        message_id: str,
-        answer: str = "",
-        is_error: bool = False,
-        reconcile_answer: bool = False,
-        duration: float = 0.0,
-        model: str = "",
-        tokens: dict | None = None,
-        context: dict | None = None,
-    ) -> bool:
-        """消息处理完成，并等待卡片真正收尾后返回是否已发送."""
-        if not self.enabled:
-            return False
-        session = self._completion_session(message_id)
-        if session is None:
-            return False
-        message_id = session.message_id
-
-        if not await self._wait_for_card_creation(session):
-            if session.has_card:
-                _logger.info("on_completed_wait: msg=%s card creation not ready but card exists", message_id[:12])
-            else:
-                _logger.info("on_completed_wait: msg=%s card creation not ready, yielding to gateway", message_id[:12])
-                self._mark_text_fallback_needed(session)
-            self._cleanup_session(session)
-            return False
-
-        if session.state == SessionState.FAILED:
-            if session.has_card:
-                _logger.info("on_completed_wait: msg=%s state=FAILED but card exists", message_id[:12])
-            else:
-                _logger.info("on_completed_wait: msg=%s state=FAILED, yielding to gateway", message_id[:12])
-                self._mark_text_fallback_needed(session)
-            self._cleanup_session(session)
-            return False
-
-        if not session.has_card:
-            _logger.info("on_completed_wait: msg=%s has no card, yielding to gateway", message_id[:12])
-            self._mark_text_fallback_needed(session)
-            self._cleanup_session(session)
-            return False
-
-        _logger.info(
-            "on_completed_wait: msg=%s has_card=%s state=%s",
-            message_id[:12],
-            session.has_card,
-            session.state,
-        )
-
-        self._apply_completion_payload(
-            session=session,
-            answer=answer,
-            reconcile_answer=reconcile_answer,
-            duration=duration,
-            model=model,
-            tokens=tokens,
-            context=context,
-        )
-        if is_error:
-            session.mark_failed()
-
-        return await self._complete_session_wait(session)
-
-    def on_cron_deliver(
-        self,
-        *,
-        chat_id: str,
-        content: str,
-        loop: asyncio.AbstractEventLoop | None,
-        task_name: str = "",
-        run_time: str = "",
-    ) -> bool:
-        """Return True when card delivery owns the text, including an uncertain timeout."""
-        if not self.enabled or not content or not chat_id:
-            return False
-        coroutine = self._do_cron_deliver(
-            chat_id, content, task_name=task_name, run_time=run_time
-        )
-        try:
-            if loop is not None and loop.is_running() and not loop.is_closed():
-                try:
-                    future = asyncio.run_coroutine_threadsafe(coroutine, loop)
-                except Exception:
-                    coroutine.close()
-                    raise
-                try:
-                    future.result(timeout=30)
-                except TimeoutError:
-                    if future.done():
-                        # Distinguish a completed send's own TimeoutError from our wait budget.
-                        future.result()
-                    else:
-                        # Cancellation cannot retract an accepted remote send. Keep ownership
-                        # rather than racing the still-running card with a native text fallback.
-                        future.add_done_callback(self._on_bg_task_done)
-                        _logger.warning("cron card delivery pending after timeout: chat=%s", chat_id[:12])
-                        return True
-            else:
-                asyncio.run(coroutine)
-            _logger.info("cron card delivered: chat=%s len=%d", chat_id[:12], len(content))
-            return True
-        except Exception:
-            _logger.warning("cron card delivery failed", exc_info=True)
-            return False
-
-    async def on_background_deliver(
-        self,
-        *,
-        chat_id: str,
-        preview: str,
-        content: str,
-        reply_to_message_id: str | None = None,
-    ) -> bool:
-        """Background 任务完成推送 — 包装为静态卡片发送，成功返回 True."""
-        if not self.enabled or not content or not chat_id:
-            return False
-        try:
-            await self._do_background_deliver(
-                chat_id,
-                preview,
-                content,
-                reply_to_message_id=reply_to_message_id,
-            )
-            _logger.info("background card delivered: chat=%s len=%d", chat_id[:12], len(content))
-            return True
-        except Exception:
-            _logger.warning("background card delivery failed", exc_info=True)
-            return False
-
-    def defer_background_review(
-        self,
-        *,
-        message_id: str,
-        text: str,
-        sender: Callable[[str], Any],
-    ) -> bool:
-        """暂存 Hermes background review 通知，等卡片收尾后再发送."""
-        if not self.enabled or not text or not callable(sender):
-            return False
-        session = self._get_active_session(message_id)
-        if session is None:
-            return False
-        with session.deferred_background_review_lock:
-            if session.deferred_background_review_closed:
-                return False
-            session.deferred_background_reviews.append((text, sender))
-        return True
-
-    def _flush_deferred_background_reviews(self, session: CardSession) -> None:
-        lock = getattr(session, "deferred_background_review_lock", None)
-        reviews = getattr(session, "deferred_background_reviews", None)
-        if lock is None or reviews is None:
-            return
-        with lock:
-            session.deferred_background_review_closed = True
-            pending = list(reviews)
-            reviews.clear()
-        for text, sender in pending:
-            try:
-                sender(text)
-            except Exception:
-                _logger.debug("background review sender failed", exc_info=True)
-
-    def _cleanup(self, message_id: str) -> None:
-        session = self._sessions.get(message_id)
-        if session is not None:
-            self._cleanup_session(session)
+    def __init__(self, config: Config, client: FeishuClient) -> None:
+        self._cfg = config
+        self._client = client
+        self.turns: dict[str, Turn] = {}
+        self._finished: OrderedDict[str, tuple[bool, bool]] = OrderedDict()
+        self._pending_tools: OrderedDict[int, Turn] = OrderedDict()
 
     def _cleanup_session(self, session: CardSession) -> None:
-        if self._sessions.get(session.message_id) is session:
-            self._sessions.pop(session.message_id, None)
-        anchor = session.anchor_id
-        if anchor and self._sessions.get(anchor) is session:
-            del self._sessions[anchor]
-        session_key = session.session_key
-        if session_key and self._session_keys.get(session_key) is session:
-            del self._session_keys[session_key]
-        stale_keys = [key for key, value in self._interrupt_map.items() if value == session.message_id]
-        for key in stale_keys:
-            del self._interrupt_map[key]
         session.flush.mark_completed()
         if session.image_resolver:
             session.image_resolver.cancel_pending()
 
-    def _completion_session(self, message_id: str) -> CardSession | None:
-        session = self._sessions.get(message_id)
-        if session is not None and (not session.state.is_terminal or session.state == SessionState.FAILED):
-            return session
-
-        redirected_id = self._interrupt_map.pop(message_id, None)
-        if redirected_id is not None:
-            _logger.info(
-                "on_completed: redirect msg=%s -> msg=%s",
-                message_id[:12],
-                redirected_id[:12],
-            )
-            redirected = self._sessions.get(redirected_id)
-            if redirected is not None and not redirected.state.is_terminal:
-                return redirected
-        return None
-
-    async def _wait_for_card_creation(self, session: CardSession) -> bool:
-        task = session.create_task
-        if task is None:
-            return True
-        try:
-            if isinstance(task, asyncio.Future):
-                await asyncio.wait_for(task, timeout=_CARD_CREATION_WAIT_SEC)
-            else:
-                await asyncio.wait_for(asyncio.wrap_future(task), timeout=_CARD_CREATION_WAIT_SEC)
-            return True
-        except TimeoutError:
-            _logger.warning(
-                "card creation timed out: msg=%s timeout=%.1fs",
-                session.message_id[:12],
-                _CARD_CREATION_WAIT_SEC,
-            )
-            task.cancel()
-            session.mark_failed()
-            return False
-        except asyncio.CancelledError:
-            session.mark_failed()
-            return False
-        except Exception:
-            _logger.debug("card creation task failed", exc_info=True)
-            return False
-
-    def _apply_completion_payload(
+    async def frame(
         self,
+        key: str,
+        chat_id: str,
+        text: str,
         *,
-        session: CardSession,
-        answer: str,
-        duration: float,
-        model: str,
-        tokens: dict | None,
-        context: dict | None,
-        reconcile_answer: bool = False,
-    ) -> None:
-        if answer:
-            final_answer = strip_reasoning_tags(answer)
-            latest_answer = next(
-                (seg for seg in reversed(session.active_segments()) if seg.type == SegmentType.ANSWER),
-                None,
-            )
-            if final_answer and reconcile_answer:
-                if latest_answer is not None and final_answer.startswith(latest_answer.text):
-                    suffix = final_answer[len(latest_answer.text):]
-                    if suffix:
-                        latest_answer.text += suffix
-                        latest_answer.dirty = True
-                else:
-                    # Keep useful partial output and separate the authoritative final notice.
-                    separator = "\n\n" if session.segment_state.segments and (
-                        session.segment_state.segments[-1].type == SegmentType.ANSWER
-                    ) else ""
-                    session.segment_state.on_answer_delta(separator + final_answer)
-            elif final_answer and not any(
-                seg.type == SegmentType.ANSWER for seg in session.segment_state.segments
-            ):
-                session.segment_state.on_answer_delta(final_answer)
+        reply_to: str | None,
+        source_id: str,
+        finalize: bool = False,
+        session_key: str = "",
+    ) -> bool:
+        """消费累计正文；只有成功落地才向宿主确认投递."""
+        if key in self._finished:
+            if not text and not finalize and self._finished[key][1]:
+                del self._finished[key]  # 宿主在审批边界后显式重新开流
+            else:
+                return self._finished[key][0]
+        turn = self.turns.get(key)
+        if turn is None:
+            session = CardSession(source_id, chat_id, asyncio.get_running_loop())
+            session.session_key = session_key
+            session.anchor_id = reply_to
+            turn = self.turns[key] = Turn(session, source_id)
+        async with turn.lock:
+            if turn.closing:
+                return self._finished.get(key, (False, False))[0]
+            session = turn.session
+            if session.state == SessionState.IDLE:
+                await self._do_create_card(session)
+            if session.guard.should_skip("frame"):
+                self._retire(key, True)
+                return True
+            if not session.has_card or session.state == SessionState.FAILED:
+                self._retire(key, False)
+                return False
+            if text != turn.text:
+                is_clarify_prompt = (
+                    finalize and not turn.text
+                    and text == t("gateway.clarify.native_stream_placeholder")
+                    and any(s.name == "clarify" and s.status == ToolStatus.RUNNING for s in turn.tools.values())
+                )
+                self._replace_text(turn, text)
+                if is_clarify_prompt:
+                    # 仅绑定宿主在空正文边界补入的提示，不替换模型正文
+                    turn.clarify_prompt = session.segment_state.segments[-1]
+                self._schedule_flush(session)
+            if not finalize:
+                return True
+            return await self._finish_locked(key, turn)
 
-        session.footer = {
-            "duration": duration,
-            "model": model,
-            **({"input_tokens": tokens.get("input_tokens")} if tokens else {}),
-            **({"output_tokens": tokens.get("output_tokens")} if tokens else {}),
-            **({"context_used": context.get("used_tokens")} if context else {}),
-            **({"context_max": context.get("max_tokens")} if context else {}),
-        }
+    async def interim(self, source_id: str, text: str) -> str | None:
+        matches = self.find_source(source_id)
+        if len(matches) != 1:
+            return None
+        _, turn = matches[0]
+        async with turn.lock:
+            if turn.closing or turn.session.guard.should_skip("interim"):
+                return None
+            # 完整 commentary 可能是刚流过的同一段前奏，不重复追加
+            if not text.strip() or not turn.text.rstrip().endswith(text.strip()):
+                self._on_thinking_segment(turn.session, "\n\n" + text + "\n\n")
+            await turn.session.flush.flush_now(lambda: self._do_flush(turn.session))
+            if turn.session.state.is_terminal or turn.session.segment_state.has_dirty:
+                return None
+            return turn.session.card_msg_id
 
-    def _complete_session(self, session: CardSession) -> None:
-        """异步完成当前流式卡片."""
-        session.flush.mark_completed()
-        self._fire_and_forget(self._complete_session_after_creation(session), session._loop)
+    def _replace_text(self, turn: Turn, text: str) -> None:
+        session = turn.session
+        if text.startswith(turn.text):
+            session.segment_state.on_answer_delta(text[len(turn.text) :])
+        else:
+            # 改写已存在的元素；删除本地对象会让远端旧元素残留并重复展示
+            for seg in session.active_segments():
+                if seg.type == SegmentType.ANSWER:
+                    seg.text = ""
+                    seg.dirty = True
+            if text:
+                session.segment_state.on_answer_delta(text)
+        turn.text = text
 
-    async def _complete_session_after_creation(self, session: CardSession) -> bool:
-        if not await self._wait_for_card_creation(session):
-            self._cleanup_session(session)
-            return False
-        return await self._complete_session_wait(session)
-
-    async def _complete_session_wait(self, session: CardSession) -> bool:
-        """完成当前流式卡片，并等待最终 API 结果."""
-        session.flush.mark_completed()
-        return await self._do_complete_card(session)
-
-    def _prune_stale_sessions(self) -> None:
-        now = time.time()
-        stale = [mid for mid, s in self._sessions.items() if mid is not None and now - s.created_at > self._session_ttl]
-        for mid in stale:
-            _logger.warning("pruning stale session: msg=%s", mid[:12])
-            self._cleanup(mid)
-
-    @staticmethod
-    def _on_bg_task_done(fut: asyncio.Future[Any] | ConcurrentFuture) -> None:
+    async def _finish_locked(self, key: str, turn: Turn, *, aborted: bool = False, failed: bool = False) -> bool:
+        turn.closing = True
+        session = turn.session
+        session.footer.setdefault("duration", time.time() - session.created_at)
+        if aborted or failed:
+            session.state = SessionState.ABORTED if aborted else SessionState.FAILED
         try:
-            fut.result()
-        except asyncio.CancelledError:
-            return
+            success = await self._do_complete_card(session)
         except Exception:
-            _logger.warning("background task failed", exc_info=True)
+            _logger.exception("Card completion failed")
+            success = False
+        if success and not (aborted or failed) and any(s.status == ToolStatus.RUNNING for s in turn.tools.values()):
+            # clarify / 审批先封卡，工具结果稍后才到；仍需更新原卡片
+            self._pending_tools[id(turn)] = turn
+            while len(self._pending_tools) > 256:
+                self._pending_tools.popitem(last=False)
+        self._retire(key, success, allow_reopen=not (aborted or failed))
+        return success
 
+    def _retire(self, key: str, success: bool, *, allow_reopen: bool = False) -> None:
+        turn = self.turns.pop(key, None)
+        if turn:
+            self._cleanup_session(turn.session)
+        self._finished[key] = (success, allow_reopen)
+        while len(self._finished) > 256:
+            self._finished.popitem(last=False)
 
-_controllers: dict[str, StreamCardController] = {}
-_controller_lock = threading.Lock()
+    def find_source(self, source_id: str) -> list[tuple[str, Turn]]:
+        return [(key, turn) for key, turn in self.turns.items() if turn.source_id == source_id and not turn.closing]
 
+    async def observe(self, source_id: str, kind: str, payload: dict[str, Any]) -> None:
+        """官方 Hook 补充内容；缺少精确入站身份时不猜测当前聊天回合."""
+        if kind == "tool_end":
+            call_id = str(payload.get("tool_call_id") or payload.get("call_id") or "")
+            observer_id = str(payload.get("turn_id") or "")
+            for pending_id, pending in list(self._pending_tools.items()):
+                if pending.source_id != source_id or call_id not in pending.tools:
+                    continue
+                if observer_id and pending.observer_turn_id and observer_id != pending.observer_turn_id:
+                    return
+                async with pending.lock:
+                    if pending.tools[call_id].status == ToolStatus.RUNNING:
+                        self._tool_event(pending, kind, payload)
+                        await self._do_complete_card(pending.session)
+                    if all(s.status != ToolStatus.RUNNING for s in pending.tools.values()):
+                        self._pending_tools.pop(pending_id, None)
+                return
+        matches = self.find_source(source_id)
+        if len(matches) != 1:
+            return
+        key, turn = matches[0]
+        async with turn.lock:
+            if turn.closing:
+                return
+            session = turn.session
+            observer_id = str(payload.get("turn_id") or "")
+            if observer_id:
+                if turn.observer_turn_id and turn.observer_turn_id != observer_id:
+                    return
+                turn.observer_turn_id = observer_id
+            if kind == "end":
+                if payload.get("interrupted") or payload.get("failed") or not payload.get("completed", True):
+                    await self._finish_locked(
+                        key,
+                        turn,
+                        aborted=bool(payload.get("interrupted")),
+                        failed=not payload.get("interrupted"),
+                    )
+                return
+            if session.state.is_terminal:
+                return
+            if kind == "reasoning" and self._cfg.show_reasoning:
+                session.segment_state.on_reasoning_delta(str(payload.get("delta", "")))
+            elif kind in {"tool_start", "tool_end"}:
+                self._tool_event(turn, kind, payload)
+            elif kind == "usage":
+                session.footer["model"] = str(payload.get("response_model") or payload.get("model") or "")
+                request_id = str(payload.get("api_request_id") or "")
+                if not request_id or request_id in turn.usage_ids:
+                    return
+                turn.usage_ids.add(request_id)
+                usage = payload.get("usage") or {}
+                # 上下文取最近一次完整输入（含缓存），不能使用整回合累计用量
+                for name, value in {
+                    "prompt_tokens": usage.get("prompt_tokens"),
+                    "context_length": payload.get("context_length"),
+                }.items():
+                    session.footer.pop(name, None)
+                    if type(value) is int and value >= 0:
+                        session.footer[name] = value
+                for target, candidates in {
+                    "input_tokens": ("input_tokens", "prompt_tokens"),
+                    "output_tokens": ("output_tokens", "completion_tokens"),
+                }.items():
+                    value = next((usage[k] for k in candidates if isinstance(usage.get(k), (int, float))), None)
+                    if value is not None:
+                        session.footer[target] = session.footer.get(target, 0) + value
+            self._schedule_flush(session)
 
-def get_controller() -> StreamCardController:
-    profile_home = hermes_home().resolve()
-    key = str(profile_home)
-    with _controller_lock:
-        controller = _controllers.get(key)
-        if controller is None:
-            controller = StreamCardController(profile_home)
-            _controllers[key] = controller
-        return controller
+    def _tool_event(self, turn: Turn, kind: str, payload: dict[str, Any]) -> None:
+        name = str(payload.get("tool_name", ""))
+        call_id = str(payload.get("tool_call_id") or payload.get("call_id") or "")
+        if not call_id:
+            return
+        tracker = turn.session.tool_use
+        step = turn.tools.get(call_id)
+        new_step = step is None
+        if kind == "tool_start":
+            if step is not None:
+                return
+            args = payload.get("args") or {}
+            detail = next((str(args[k]) for k in ("command", "path", "query", "url") if args.get(k)), "")
+            detail = " ".join(redact_inline_secrets(detail).split())
+            step = tracker.record_start(name, detail[:200] + ("…" if len(detail) > 200 else ""))
+            if step is not None:
+                turn.tools[call_id] = step
+        else:
+            if step is None:
+                step = tracker.record_start(name)
+                if step is None:
+                    return
+                turn.tools[call_id] = step
+            if step.status != ToolStatus.RUNNING:
+                return
+            error = bool(payload.get("is_error")) or payload.get("status") in {"error", "failed"}
+            error_text = ""
+            if error:
+                error_text = redact_inline_secrets(
+                    str(payload.get("error_message") or payload.get("result") or "Tool failed")
+                )
+                error_text = " ".join(error_text.split())
+                if len(error_text) > 200:
+                    error_text = error_text[:200] + "…"
+            # Hook 的完整 result 属于模型上下文，不在卡片重复展示
+            tracker.record_end(name, target=step, error=error_text)
+            step.elapsed_ms = float(payload.get("duration_ms") or (time.time() - step.started_at) * 1000)
+            if step.name == "clarify" and turn.clarify_prompt is not None:
+                result = payload.get("result")
+                if isinstance(result, str):
+                    try:
+                        result = json.loads(result)
+                    except ValueError:
+                        result = None
+                answered = (
+                    not error and isinstance(result, dict) and result.get("outcome") == "submitted"
+                    and any(isinstance(r, dict) and r.get("status") == "answered"
+                            for r in (result.get("responses") or []))
+                )
+                labels = _t("clarify_answered" if answered else "clarify_ended")
+                turn.clarify_prompt.text = labels["zh_cn" if get_language().startswith("zh") else "en_us"]
+                turn.clarify_prompt.dirty = True
+        if not turn.closing:
+            segments = turn.session.segment_state
+            if new_step:
+                segments.on_tool_event(len(turn.tools))
+            else:
+                # 工具结果可能晚于下一段正文，只刷新所属面板，不另建重复步骤。
+                index = list(turn.tools).index(call_id)
+                for seg in segments.segments:
+                    if (
+                        seg.type == SegmentType.TOOL
+                        and seg.tool_offset <= index < (seg.tool_end_offset or len(turn.tools))
+                    ):
+                        seg.dirty = True
+
+    async def close_source(self, source_id: str) -> None:
+        for key, turn in self.find_source(source_id):
+            async with turn.lock:
+                if not turn.closing:
+                    await self._finish_locked(key, turn, aborted=True)
+
+    async def close(self) -> None:
+        for source_id in {turn.source_id for turn in self.turns.values()}:
+            await self.close_source(source_id)
+        self._pending_tools.clear()

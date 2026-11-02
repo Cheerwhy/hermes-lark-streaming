@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Coroutine
+import uuid
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from ..cardkit.builder import build_background_card, build_complete_card, build_cron_card, build_streaming_card_v2
+from ..cardkit.builder import build_complete_card, build_streaming_card_v2
 from ..cardkit.markdown import (
     _downgrade_tables,
     optimize_markdown_style,
@@ -16,6 +17,7 @@ from ..feishu import (
     CARDKIT_CONTENT_FAILED,
     CARDKIT_ELEMENT_LIMIT,
     CARDKIT_RATE_LIMITED,
+    CARDKIT_SEQUENCE_CONFLICT,
     CARDKIT_STREAMING_CLOSED,
     FeishuAPIError,
 )
@@ -36,7 +38,6 @@ from .segment_helper import (
 from .segments import Segment, SegmentState, SegmentType
 from .session import SessionState
 from .text import split_reasoning_text
-from .tooluse import ToolUseTracker
 
 if TYPE_CHECKING:
     from ..config import Config
@@ -68,15 +69,25 @@ class StreamingController:
 
     _client: FeishuClient | None
     _cfg: Config
-    _ensure_init: Callable[..., Coroutine[Any, Any, None]]
     _cleanup_session: Callable[[CardSession], None]
-    _flush_deferred_background_reviews: Callable[[CardSession], None]
-    _wait_for_card_creation: Callable[[CardSession], Coroutine[Any, Any, bool]]
+
+    async def _cardkit_call(
+        self, session: CardSession, operation: Callable[..., Awaitable[None]], *args: Any,
+    ) -> None:
+        """同一操作重用幂等 ID；仅序号冲突时递增重试，保持会话后续序号同步."""
+        request_id = uuid.uuid4().hex
+        for attempt in range(3):
+            session.sequence += 1
+            try:
+                await operation(*args, sequence=session.sequence, request_id=request_id)
+                return
+            except FeishuAPIError as exc:
+                if exc.code != CARDKIT_SEQUENCE_CONFLICT or attempt == 2:
+                    raise
+                _logger.warning("CardKit sequence conflict: seq=%d; retrying", session.sequence)
 
     def _schedule_flush(self, session: CardSession) -> None:
         if session.state == SessionState.IDLE or session.state.is_terminal:
-            return
-        if session.state == SessionState.CLARIFY_PAUSED:
             return
         if session.guard.should_skip("_schedule_flush"):
             return
@@ -105,43 +116,37 @@ class StreamingController:
         session.state = SessionState.CREATING
 
         try:
-            await self._ensure_init()
             assert self._client is not None
 
-            reply_to_message_id = session.anchor_id or session.message_id
             card = build_streaming_card_v2(
                 header_enabled=self._cfg.header_enabled,
                 width_mode=self._cfg.width_mode,
             )
             card_id = await self._client.cardkit_create(card)
             try:
-                card_msg_id = await self._client.reply_card_by_id(
-                    reply_to_message_id,
-                    card_id,
-                )
+                card_msg_id = await self._send_card_reference(session, card_id)
             except FeishuAPIError as error:
                 if error.code != CARDKIT_CONTENT_FAILED:
                     raise
                 card_id = await self._client.cardkit_create(card)
                 try:
-                    card_msg_id = await self._client.reply_card_by_id(
-                        reply_to_message_id,
-                        card_id,
-                    )
+                    card_msg_id = await self._send_card_reference(session, card_id)
                 except FeishuAPIError:
                     card_msg_id = await self._client.send_card_to_chat(
-                        chat_id=session.chat_id,
-                        card={"type": "card", "data": {"card_id": card_id}},
+                        chat_id=session.chat_id, card={"type": "card", "data": {"card_id": card_id}},
                     )
             session.set_card(card_id=card_id, card_msg_id=card_msg_id)
             session.element_count = 1  # loading element
             session.flush.set_throttle(CARDKIT_MS)
 
-            if session.image_resolver is None and self._client:
-                session.image_resolver = ImageResolver(
-                    client=self._client,
-                    on_image_resolved=lambda: self._schedule_flush(session),
-                )
+            if session.image_resolver is None:
+                def image_resolved() -> None:
+                    for seg in session.active_segments():
+                        if seg.type == SegmentType.ANSWER:
+                            seg.dirty = True
+                    self._schedule_flush(session)
+
+                session.image_resolver = ImageResolver(client=self._client, on_image_resolved=image_resolved)
 
             session.flush.set_card_message_ready(True)
             if session.state == SessionState.CREATING:
@@ -155,8 +160,6 @@ class StreamingController:
             )
         except FeishuAPIError:
             _logger.info("CardKit create failed, yielding to gateway", exc_info=True)
-            if hasattr(self, "_mark_text_fallback_needed"):
-                self._mark_text_fallback_needed(session)
             session.mark_failed()
         except Exception:
             _logger.exception("_do_create_card failed")
@@ -301,40 +304,40 @@ class StreamingController:
             try:
                 if seg.type == SegmentType.REASONING:
                     content = optimize_markdown_style(seg.text) or " "
-                    session.sequence += 1
+                    # 请求期间仍可能收到增量或图片回调，不能在返回后清掉它们的 dirty。
+                    seg.dirty = False
                     _logger.info(
                         "CardKit stream element: msg=%s seq=%d type=reasoning len=%d",
                         session.message_id[:12],
-                        session.sequence,
+                        session.sequence + 1,
                         len(content),
                     )
-                    await self._client.cardkit_stream_element(
-                        session.card_id,
+                    await self._cardkit_call(
+                        session, self._client.cardkit_stream_element, session.card_id,
                         seg.text_el_id,
                         content,
-                        sequence=session.sequence,
                     )
-                    seg.dirty = False
                 elif seg.type == SegmentType.ANSWER:
                     content = seg.text
                     if session.image_resolver:
                         content = session.image_resolver.resolve_images(content)
                     content = _downgrade_tables(optimize_markdown_style(content)) or " "
-                    session.sequence += 1
+                    seg.dirty = False
                     _logger.info(
                         "CardKit stream element: msg=%s seq=%d type=answer len=%d",
                         session.message_id[:12],
-                        session.sequence,
+                        session.sequence + 1,
                         len(content),
                     )
-                    await self._client.cardkit_stream_element(
-                        session.card_id,
+                    await self._cardkit_call(
+                        session, self._client.cardkit_stream_element, session.card_id,
                         seg.el_id,
                         content,
-                        sequence=session.sequence,
                     )
-                    seg.dirty = False
             except Exception as e:
+                seg.dirty = True
+                if session.guard.terminate("stream_element", e):
+                    return
                 _logger.debug("CardKit stream element failed: %s el=%s", e, seg.el_id, exc_info=True)
 
     async def _do_batch_update(
@@ -349,12 +352,11 @@ class StreamingController:
         """执行 batch_update 并处理快照/标记。返回 False 表示失败."""
         assert self._client is not None
         assert session.card_id is not None
-        session.sequence += 1
         _logger.info(
             "CardKit batch update: msg=%s card=%s seq=%d actions=%d split=%d elements=%d",
             session.message_id[:12],
             session.card_id[:12],
-            session.sequence,
+            session.sequence + 1,
             len(actions),
             session.split_index,
             session.element_count,
@@ -371,10 +373,9 @@ class StreamingController:
             for seg in updated_tool_segs
         }
         try:
-            await self._client.cardkit_batch_update(
-                session.card_id,
+            await self._cardkit_call(
+                session, self._client.cardkit_batch_update, session.card_id,
                 actions,
-                sequence=session.sequence,
             )
             for seg in segments:
                 if seg.el_id in new_el_ids:
@@ -385,12 +386,6 @@ class StreamingController:
             for seg in segments:
                 if seg.type == SegmentType.REASONING and pre_flush_reasoning_elapsed.get(seg.el_id, 0) > 0:
                     seg.reasoning_finalized = True
-            if new_el_ids:
-                for seg in segments:
-                    if seg.el_id in new_el_ids or not seg.created:
-                        continue
-                    if seg.type in (SegmentType.REASONING, SegmentType.ANSWER) and seg.text:
-                        seg.dirty = True
             current_tool_steps = session.tool_use.build_display_steps()
             for seg in updated_tool_segs:
                 offset_ok = pre_flush_tool_offsets.get(seg.el_id, -1) == seg.tool_end_offset
@@ -439,7 +434,8 @@ class StreamingController:
                             seg.el_id,
                         )
                         break
-            self._handle_flush_error(e)
+            if not session.guard.terminate("batch_update", e):
+                self._handle_flush_error(e)
             return False
         return True
 
@@ -498,17 +494,10 @@ class StreamingController:
         self,
         session: CardSession,
         seal_segments: list[Segment],
-        *,
-        card_id: str | None = None,
-        sequence: int | None = None,
     ) -> None:
-        """封印指定卡（默认 session.card_id）：close_streaming + 全量重建。失败仅记录日志。
-
-        card_id 用于 session 已切到新卡、仍需封印旧卡的场景（clarify 切卡）；
-        sequence 传入旧卡续用的递增序列（CardKit 要求单调递增，不能用新卡的计数）。
-        """
+        """关闭当前卡的流式模式并封存内容，拆卡后继续使用新卡."""
         assert self._client is not None
-        old_card_id = card_id or session.card_id
+        old_card_id = session.card_id
         if not old_card_id:
             return
         if session.image_resolver:
@@ -531,17 +520,22 @@ class StreamingController:
             width_mode=self._cfg.width_mode,
         )
         try:
-            seq = session.sequence if sequence is None else sequence
-            seq += 1
-            await self._client.cardkit_close_streaming(old_card_id, sequence=seq)
-            seq += 1
-            await self._client.cardkit_update(old_card_id, seal_card, sequence=seq)
+            await self._cardkit_call(session, self._client.cardkit_close_streaming, old_card_id)
+            await self._cardkit_call(session, self._client.cardkit_update, old_card_id, seal_card)
         except Exception:
             _logger.warning(
                 "CardKit seal failed for old card %s, continuing",
                 old_card_id[:12],
                 exc_info=True,
             )
+
+    async def _send_card_reference(self, session: CardSession, card_id: str) -> str:
+        assert self._client is not None
+        if session.anchor_id:
+            return await self._client.reply_card_by_id(session.anchor_id, card_id)
+        return await self._client.send_card_to_chat(
+            chat_id=session.chat_id, card={"type": "card", "data": {"card_id": card_id}},
+        )
 
     async def _create_streaming_card(self, session: CardSession) -> tuple[str, str] | None:
         """创建空白流式卡并挂到 anchor，返回 (card_id, msg_id)。失败返回 None。
@@ -555,9 +549,7 @@ class StreamingController:
                 width_mode=self._cfg.width_mode,
             )
             new_card_id = await self._client.cardkit_create(card)
-            new_msg_id = await self._client.reply_card_by_id(
-                session.anchor_id or session.message_id, new_card_id,
-            )
+            new_msg_id = await self._send_card_reference(session, new_card_id)
         except Exception:
             _logger.warning(
                 "CardKit create streaming card failed for msg=%s",
@@ -617,68 +609,6 @@ class StreamingController:
         )
         return True
 
-    async def _do_clarify_split(self, session: CardSession) -> bool:
-        """clarify 工具结束后切卡：建新卡 + 封旧卡。
-
-        返回 False 表示未切卡（无卡可封，或建卡失败降级继续写旧卡）。
-        """
-        await self._wait_for_card_creation(session)
-        if not session.has_card or session.state == SessionState.FAILED:
-            _logger.info(
-                "clarify_split: no card to seal, msg=%s state=%s",
-                session.message_id[:12], session.state,
-            )
-            return False
-
-        # 先禁拆卡再等 flush：否则进行中的 flush 可能先拆卡，随后被本流程封印成空白卡。
-        session.split_disabled = True
-        try:
-            await session.flush.wait_for_flush()
-            try:
-                await session.flush.flush_now(lambda: self._do_flush(session))
-            except Exception:
-                _logger.debug("clarify_split: final flush failed", exc_info=True)
-
-            # 先建新卡后封旧卡（与拆卡一致）：建卡失败时旧卡未 close，可降级继续流式。
-            new_card = await self._create_streaming_card(session)
-            if new_card is None:
-                _logger.warning(
-                    "clarify_split: create new card failed, continuing on current card, msg=%s",
-                    session.message_id[:12],
-                )
-                return False
-
-            # 先切到新卡再封旧卡：任意时刻被取消（超时兜底）时，session 指向的都是
-            # 未 close 的卡，后续 flush 不会写到已关闭的旧卡。
-            # seal 必须显式传旧 card_id + 旧 sequence（session 已切新卡，
-            # 且 CardKit sequence 要求单调递增，不能用新卡的计数）。
-            old_card_id = session.card_id
-            old_seq = session.sequence
-            new_card_id, new_msg_id = new_card
-            session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
-            session.sequence = 1  # 新卡从 1 重新计数
-
-            await self._seal_current_card(
-                session,
-                session.active_segments(),
-                card_id=old_card_id,
-                sequence=old_seq,
-            )
-
-            # 重置内容，新卡承载 clarify 后的输出
-            session.segment_state = SegmentState()
-            session.split_index = 0
-            session.element_count = 1  # loading element（与拆卡一致）
-            session.tool_use = ToolUseTracker()
-
-            _logger.info(
-                "clarify_split: sealed old + new card msg=%s card=%s",
-                session.message_id[:12], new_card_id[:12],
-            )
-            return True
-        finally:
-            session.split_disabled = False  # 取消/异常/失败均恢复拆卡能力
-
     def _handle_flush_error(self, e: FeishuAPIError) -> None:
         if e.code == CARDKIT_RATE_LIMITED:
             return
@@ -694,7 +624,6 @@ class StreamingController:
         try:
             return await self._do_complete_card_inner(session)
         finally:
-            self._flush_deferred_background_reviews(session)
             self._cleanup_session(session)
 
     async def _do_complete_card_inner(self, session: CardSession) -> bool:
@@ -737,23 +666,17 @@ class StreamingController:
             width_mode=self._cfg.width_mode,
         )
 
-        streaming_closed = False
+        streaming_closed = session.state == SessionState.COMPLETED
         for attempt in range(3):
             try:
                 assert self._client is not None
                 if session.card_id:
                     if not streaming_closed:
-                        session.sequence += 1
-                        await self._client.cardkit_close_streaming(
-                            session.card_id,
-                            sequence=session.sequence,
-                        )
+                        await self._cardkit_call(session, self._client.cardkit_close_streaming, session.card_id)
                         streaming_closed = True
-                    session.sequence += 1
-                    await self._client.cardkit_update(
-                        session.card_id,
+                    await self._cardkit_call(
+                        session, self._client.cardkit_update, session.card_id,
                         card,
-                        sequence=session.sequence,
                     )
                 session.state = SessionState.COMPLETED
                 return True
@@ -767,7 +690,7 @@ class StreamingController:
                     session.sequence,
                     exc_info=True,
                 )
-                if session.guard.terminate("_do_complete_card", e):
+                if e.code == CARDKIT_SEQUENCE_CONFLICT or session.guard.terminate("_do_complete_card", e):
                     return False
                 if attempt < 2:
                     await asyncio.sleep(2**attempt)
@@ -793,28 +716,3 @@ class StreamingController:
         )
         session.mark_failed()
         return False
-
-    async def _do_cron_deliver(
-        self, chat_id: str, content: str, *, task_name: str = "", run_time: str = ""
-    ) -> None:
-        await self._ensure_init()
-        assert self._client is not None
-        card = build_cron_card(content, task_name=task_name, run_time=run_time)
-        await self._client.send_card_to_chat(chat_id, card)
-
-    async def _do_background_deliver(
-        self,
-        chat_id: str,
-        preview: str,
-        content: str,
-        *,
-        reply_to_message_id: str | None = None,
-    ) -> None:
-        await self._ensure_init()
-        assert self._client is not None
-        card = build_background_card(preview, content)
-        await self._client.send_card_to_chat(
-            chat_id,
-            card,
-            reply_to_message_id=reply_to_message_id,
-        )
