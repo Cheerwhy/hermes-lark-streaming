@@ -10,6 +10,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      HERMES_DISABLE_LAZY_INSTALLS: '1'
     strategy:
       matrix:
         hermes:
@@ -37,12 +39,22 @@ jobs:
         run: |
           python -m ruff check hermes_lark_streaming tests scripts __init__.py
           python -m mypy hermes_lark_streaming scripts
-      - name: Native interface and rendering tests
+      - name: Native platform and rendering tests
+        env:
+          HERMES_HOME: ${{ runner.temp }}/hermes-test-home
+        run: python -m pytest tests -q
+      - name: Native interface and manifest verification
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-test-home
         run: |
-          python -m pytest tests -q
           python -m hermes_lark_streaming verify
-          python -m hermes_cli.main plugins validate . --json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from hermes_cli.plugin_validate import validate_plugin_dir
+          report = validate_plugin_dir(Path.cwd())
+          print(json.dumps(report.to_dict(), indent=2))
+          raise SystemExit(report.exit_code)
+          PY
       - name: Build distribution
         run: python -m build
