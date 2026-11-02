@@ -10,6 +10,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugin
     env:
       HERMES_DISABLE_LAZY_INSTALLS: '1'
     strategy:
@@ -19,6 +22,8 @@ jobs:
           - bf0203a794a07aac3ff764972ab9087baa4e4f4e # v0.22.5
     steps:
       - uses: actions/checkout@v6
+        with:
+          path: plugin
       - uses: actions/checkout@v6
         with:
           repository: NousResearch/hermes-agent
@@ -32,8 +37,8 @@ jobs:
       - name: Install Hermes and plugin in isolated environment
         run: |
           # Honor the host lockfile and dependency overrides (including Pillow/browser-harness).
-          uv sync --project .hermes-test-source --frozen --no-dev --python 3.14
-          uv pip install --python .hermes-test-source/.venv/bin/python -e '.[dev]' build
+          uv sync --project ../.hermes-test-source --frozen --no-dev --python 3.14
+          uv pip install --python ../.hermes-test-source/.venv/bin/python -e '.[dev]' build
           echo "$GITHUB_WORKSPACE/.hermes-test-source/.venv/bin" >> "$GITHUB_PATH"
       - name: Lint and type check
         run: |
