@@ -32,10 +32,13 @@ from lark_oapi.api.im.v1 import (
     CreateImageRequestBody,
     CreateMessageRequest,
     CreateMessageRequestBody,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
 )
 
+from . import __version__
 from .config import DEFAULT_DOMAIN
 
 _logger = logging.getLogger("hermes_lark_streaming")
@@ -84,6 +87,7 @@ class FeishuAPIError(RuntimeError):
 CARDKIT_RATE_LIMITED = 230020  # 频控
 CARDKIT_CONTENT_FAILED = 230099  # 卡片内容创建失败（通用码，需检查子错误）
 CARDKIT_ELEMENT_LIMIT = 11310  # 子码: 卡片元素数量超限
+CARDKIT_SEQUENCE_CONFLICT = 300317  # 操作序号未递增
 CARDKIT_STREAMING_CLOSED = 300309  # 卡片流式模式已关闭
 MSG_NOT_FOUND = 1000023  # 消息不存在/已删除
 
@@ -159,6 +163,14 @@ class FeishuClient:
         assert last_error is not None
         raise last_error
 
+    async def update_card_message(self, message_id: str, card: dict[str, Any]) -> None:
+        """通过卡片专用 PATCH 接口更新消息，不能使用文本消息的 PUT 接口."""
+        request = (
+            PatchMessageRequest.builder().message_id(message_id)
+            .request_body(PatchMessageRequestBody.builder().content(self._dumps(card)).build()).build()
+        )
+        await self._checked_call("update_card_message", lambda: self._client.im.v1.message.apatch(request))
+
     async def send_card_to_chat(
         self,
         chat_id: str,
@@ -166,7 +178,7 @@ class FeishuClient:
         *,
         reply_to_message_id: str | None = None,
     ) -> str:
-        """发送独立卡片到聊天（非回复），返回 message_id."""
+        """向指定聊天发送卡片，可通过消息 ID 定位回复，返回 message_id."""
         request_uuid = uuid.uuid4().hex
         if reply_to_message_id:
             request = (
@@ -252,10 +264,11 @@ class FeishuClient:
         content: str,
         *,
         sequence: int = 0,
+        request_id: str | None = None,
     ) -> None:
         """流式更新卡片内指定 element 的内容（打字机效果）."""
         body_builder = ContentCardElementRequestBody.builder().content(content)
-        body_builder = body_builder.sequence(sequence)
+        body_builder = body_builder.sequence(sequence).uuid(request_id or uuid.uuid4().hex)
         request = (
             ContentCardElementRequest.builder()
             .card_id(card_id)
@@ -273,12 +286,14 @@ class FeishuClient:
         card_id: str,
         card: dict[str, Any],
         sequence: int = 0,
+        *,
+        request_id: str | None = None,
     ) -> None:
         """全量更新 CardKit 卡片."""
         body_builder = UpdateCardRequestBody.builder().card(
             Card.builder().type("card_json").data(self._dumps(card)).build()
         )
-        body_builder = body_builder.sequence(sequence)
+        body_builder = body_builder.sequence(sequence).uuid(request_id or uuid.uuid4().hex)
         request = UpdateCardRequest.builder().card_id(card_id).request_body(body_builder.build()).build()
         await self._checked_call(
             "cardkit_update",
@@ -291,19 +306,25 @@ class FeishuClient:
         actions: list[dict[str, Any]],
         *,
         sequence: int = 0,
+        request_id: str | None = None,
     ) -> None:
         """局部更新 CardKit 卡片（增删改组件）."""
-        body_builder = BatchUpdateCardRequestBody.builder().sequence(sequence).actions(self._dumps(actions))
+        body_builder = (
+            BatchUpdateCardRequestBody.builder().sequence(sequence)
+            .uuid(request_id or uuid.uuid4().hex).actions(self._dumps(actions))
+        )
         request = BatchUpdateCardRequest.builder().card_id(card_id).request_body(body_builder.build()).build()
         await self._checked_call(
             "cardkit_batch_update",
             lambda: self._client.cardkit.v1.card.abatch_update(request),
         )
 
-    async def cardkit_close_streaming(self, card_id: str, sequence: int = 0) -> None:
+    async def cardkit_close_streaming(
+        self, card_id: str, sequence: int = 0, *, request_id: str | None = None,
+    ) -> None:
         """关闭 CardKit 卡片的流式模式."""
         body_builder = SettingsCardRequestBody.builder().settings(self._dumps({"streaming_mode": False}))
-        body_builder = body_builder.sequence(sequence)
+        body_builder = body_builder.sequence(sequence).uuid(request_id or uuid.uuid4().hex)
         request = SettingsCardRequest.builder().card_id(card_id).request_body(body_builder.build()).build()
         await self._checked_call(
             "cardkit_close_streaming",
@@ -341,7 +362,7 @@ class FeishuClient:
     def _download_image(url: str, timeout: int = 15) -> bytes | None:
         """同步下载图片（在线程池中运行）."""
         try:
-            req = Request(url, headers={"User-Agent": "hermes-lark-streaming/1.0"})
+            req = Request(url, headers={"User-Agent": f"hermes-lark-streaming/{__version__}"})
             with urlopen(req, timeout=timeout) as resp:
                 if resp.status != 200:
                     return None

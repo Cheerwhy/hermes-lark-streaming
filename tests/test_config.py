@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
@@ -12,43 +10,41 @@ from hermes_lark_streaming.config import Config
 
 
 def _make_config(raw: dict[str, Any]) -> Config:
-    """Create a Config pre-loaded with given raw dict."""
-    cfg = Config()
-    cfg._raw = raw
-    return cfg
+    """绑定原生平台 extra.card 配置."""
+    return Config(extra={"card": raw.get("card", {})})
 
 
 class TestEnabled:
     def test_enabled_true(self) -> None:
-        cfg = _make_config({"streaming": {"enabled": True}})
+        cfg = _make_config({"card": {"enabled": True}})
         assert cfg.enabled is True
 
     def test_enabled_false(self) -> None:
-        cfg = _make_config({"streaming": {"enabled": False}})
+        cfg = _make_config({"card": {"enabled": False}})
         assert cfg.enabled is False
 
-    @pytest.mark.parametrize("raw", [{"streaming": {}}, {}], ids=["missing-key", "missing-section"])
-    def test_enabled_defaults_false_when_missing(self, raw: dict[str, Any]) -> None:
+    @pytest.mark.parametrize("raw", [{"card": {}}, {}], ids=["missing-key", "missing-section"])
+    def test_enabled_defaults_true_when_missing(self, raw: dict[str, Any]) -> None:
         cfg = _make_config(raw)
-        assert cfg.enabled is False
+        assert cfg.enabled is True
 
-    def test_streaming_section_not_dict(self) -> None:
-        cfg = _make_config({"streaming": "invalid"})
-        assert cfg.enabled is False
+    def test_card_section_not_dict(self) -> None:
+        cfg = _make_config({"card": "invalid"})
+        assert cfg.enabled is True
 
 
 class TestFooterFields:
     def test_normal_2d_fields(self) -> None:
-        cfg = _make_config({"streaming": {"footer": {"fields": [["a", "b"], ["c"]]}}})
+        cfg = _make_config({"card": {"footer": {"fields": [["a", "b"], ["c"]]}}})
         assert cfg.footer_fields == [["a", "b"], ["c"]]
 
     def test_1d_auto_wrapped(self) -> None:
-        cfg = _make_config({"streaming": {"footer": {"fields": ["status", "elapsed"]}}})
+        cfg = _make_config({"card": {"footer": {"fields": ["status", "elapsed"]}}})
         assert cfg.footer_fields == [["status", "elapsed"]]
 
     @pytest.mark.parametrize(
         "raw",
-        [{"streaming": {"footer": {"fields": []}}}, {"streaming": {}}],
+        [{"card": {"footer": {"fields": []}}}, {"card": {}}],
         ids=["empty-fields", "missing-footer"],
     )
     def test_empty_footer_configuration_returns_default(self, raw: dict[str, Any]) -> None:
@@ -56,26 +52,26 @@ class TestFooterFields:
         assert cfg.footer_fields == [["status", "elapsed", "context", "model"]]
 
     def test_footer_not_dict_returns_default(self) -> None:
-        cfg = _make_config({"streaming": {"footer": "invalid"}})
+        cfg = _make_config({"card": {"footer": "invalid"}})
         assert cfg.footer_fields == [["status", "elapsed", "context", "model"]]
 
     def test_fields_non_list_returns_default(self) -> None:
-        cfg = _make_config({"streaming": {"footer": {"fields": "status"}}})
+        cfg = _make_config({"card": {"footer": {"fields": "status"}}})
         assert cfg.footer_fields == [["status", "elapsed", "context", "model"]]
 
 
 class TestHeaderEnabled:
     def test_enabled_true(self) -> None:
-        cfg = _make_config({"streaming": {"header": {"enabled": True}}})
+        cfg = _make_config({"card": {"header": {"enabled": True}}})
         assert cfg.header_enabled is True
 
     def test_enabled_false(self) -> None:
-        cfg = _make_config({"streaming": {"header": {"enabled": False}}})
+        cfg = _make_config({"card": {"header": {"enabled": False}}})
         assert cfg.header_enabled is False
 
     @pytest.mark.parametrize(
         "raw",
-        [{"streaming": {"header": {}}}, {"streaming": {}}],
+        [{"card": {"header": {}}}, {"card": {}}],
         ids=["missing-key", "missing-section"],
     )
     def test_header_enabled_defaults_false_when_missing(self, raw: dict[str, Any]) -> None:
@@ -83,22 +79,22 @@ class TestHeaderEnabled:
         assert cfg.header_enabled is False
 
     def test_header_not_dict_defaults_false(self) -> None:
-        cfg = _make_config({"streaming": {"header": "invalid"}})
+        cfg = _make_config({"card": {"header": "invalid"}})
         assert cfg.header_enabled is False
 
 
 class TestFooterEnabled:
     def test_enabled_true(self) -> None:
-        cfg = _make_config({"streaming": {"footer": {"enabled": True}}})
+        cfg = _make_config({"card": {"footer": {"enabled": True}}})
         assert cfg.footer_enabled is True
 
     def test_enabled_false(self) -> None:
-        cfg = _make_config({"streaming": {"footer": {"enabled": False}}})
+        cfg = _make_config({"card": {"footer": {"enabled": False}}})
         assert cfg.footer_enabled is False
 
     @pytest.mark.parametrize(
         "raw",
-        [{"streaming": {"footer": {}}}, {"streaming": {}}],
+        [{"card": {"footer": {}}}, {"card": {}}],
         ids=["missing-key", "missing-section"],
     )
     def test_footer_enabled_defaults_true_when_missing(self, raw: dict[str, Any]) -> None:
@@ -106,83 +102,37 @@ class TestFooterEnabled:
         assert cfg.footer_enabled is True
 
     def test_footer_not_dict_defaults_true(self) -> None:
-        cfg = _make_config({"streaming": {"footer": "invalid"}})
+        cfg = _make_config({"card": {"footer": "invalid"}})
         assert cfg.footer_enabled is True
 
 
 class TestFooterShowLabel:
     @pytest.mark.parametrize("value", [True, False])
     def test_reads_boolean_value(self, value: bool) -> None:
-        cfg = _make_config({"streaming": {"footer": {"show_label": value}}})
+        cfg = _make_config({"card": {"footer": {"show_label": value}}})
         assert cfg.footer_show_label is value
 
     def test_missing_defaults_false(self) -> None:
-        cfg = _make_config({"streaming": {"footer": {}}})
+        cfg = _make_config({"card": {"footer": {}}})
         assert cfg.footer_show_label is False
-
-
-class TestCardDurationSec:
-    def test_custom(self) -> None:
-        cfg = _make_config({"streaming": {"card_ttl_sec": 300}})
-        assert cfg.card_duration_sec == 300
-
-    def test_default(self) -> None:
-        cfg = _make_config({"streaming": {}})
-        assert cfg.card_duration_sec == 600
 
 
 class TestWidthMode:
     def test_default_when_missing(self) -> None:
-        cfg = _make_config({"streaming": {}})
+        cfg = _make_config({"card": {}})
         assert cfg.width_mode == "default"
 
     def test_reads_valid_value(self) -> None:
-        cfg = _make_config({"streaming": {"width_mode": "compact"}})
+        cfg = _make_config({"card": {"width_mode": "compact"}})
         assert cfg.width_mode == "compact"
 
     def test_reads_case_insensitive(self) -> None:
-        cfg = _make_config({"streaming": {"width_mode": "FILL"}})
+        cfg = _make_config({"card": {"width_mode": "FILL"}})
         assert cfg.width_mode == "fill"
 
     def test_invalid_falls_back_to_default(self) -> None:
-        cfg = _make_config({"streaming": {"width_mode": "wide"}})
+        cfg = _make_config({"card": {"width_mode": "wide"}})
         assert cfg.width_mode == "default"
-
-
-class TestFeishuAppId:
-    def test_from_env(self) -> None:
-        cfg = _make_config({})
-        with patch.dict(os.environ, {"FEISHU_APP_ID": "env_id", "FEISHU_APP_SECRET": "env_secret"}):
-            assert cfg.feishu_app_id == "env_id"
-
-    def test_from_config(self) -> None:
-        cfg = _make_config({"feishu": {"app_id": "cfg_id", "app_secret": "cfg_secret"}})
-        with patch.dict(os.environ, {}, clear=True):
-            assert cfg.feishu_app_id == "cfg_id"
-
-    def test_empty_when_missing(self) -> None:
-        cfg = _make_config({})
-        with patch.dict(os.environ, {}, clear=True):
-            assert cfg.feishu_app_id == ""
-
-
-class TestFeishuBaseURL:
-    def test_default_url(self) -> None:
-        cfg = _make_config({"feishu": {"app_id": "id", "app_secret": "s"}})
-        with patch.dict(os.environ, {}, clear=True):
-            assert cfg.feishu_base_url == "https://open.feishu.cn"
-
-    def test_custom_url_from_config(self) -> None:
-        cfg = _make_config({"feishu": {"app_id": "id", "app_secret": "s", "base_url": "https://custom.com"}})
-        with patch.dict(os.environ, {}, clear=True):
-            assert cfg.feishu_base_url == "https://custom.com"
-
-    def test_from_env(self) -> None:
-        cfg = _make_config({})
-        with patch.dict(
-            os.environ, {"FEISHU_APP_ID": "id", "FEISHU_APP_SECRET": "s", "FEISHU_BASE_URL": "https://env.com"}
-        ):
-            assert cfg.feishu_base_url == "https://env.com"
 
 
 class TestShowReasoning:
@@ -234,7 +184,7 @@ class TestShowReasoning:
         assert cfg.show_reasoning is False
 
     def test_no_display_section(self) -> None:
-        cfg = self._make_reasoning_config({"streaming": {"enabled": True}})
+        cfg = self._make_reasoning_config({"card": {"enabled": True}})
         assert cfg.show_reasoning is False
 
 
@@ -287,79 +237,13 @@ class TestShowToolUse:
         assert cfg.show_tool_use is False
 
 
-class TestPlatformCfg:
-    def test_env_takes_priority(self) -> None:
-        cfg = _make_config({"feishu": {"app_id": "config_id", "app_secret": "config_secret"}})
-        with patch.dict(os.environ, {"FEISHU_APP_ID": "env_id", "FEISHU_APP_SECRET": "env_secret"}):
-            result = cfg._platform_cfg()
-            assert result["app_id"] == "env_id"
-
-    def test_lark_section_fallback(self) -> None:
-        cfg = _make_config({"lark": {"app_id": "lark_id", "app_secret": "lark_secret"}})
-        with patch.dict(os.environ, {}, clear=True):
-            result = cfg._platform_cfg()
-            assert result["app_id"] == "lark_id"
-
-    def test_feishu_before_lark(self) -> None:
-        cfg = _make_config(
-            {
-                "feishu": {"app_id": "feishu_id", "app_secret": "fs"},
-                "lark": {"app_id": "lark_id", "app_secret": "ls"},
-            }
-        )
-        with patch.dict(os.environ, {}, clear=True):
-            result = cfg._platform_cfg()
-            assert result["app_id"] == "feishu_id"
-
-    def test_empty_when_nothing(self) -> None:
-        cfg = _make_config({})
-        with patch.dict(os.environ, {}, clear=True):
-            assert cfg._platform_cfg() == {}
+def test_invalid_footer_does_not_break_completion() -> None:
+    assert Config(extra={"card": {"footer": "invalid"}}).footer_show_label is False
 
 
-def test_bound_profile_homes_resolve_distinct_gateway_platform_credentials(tmp_path) -> None:
-    home_a = tmp_path / "profile-a"
-    home_b = tmp_path / "profile-b"
-    home_a.mkdir()
-    home_b.mkdir()
-    (home_a / "config.yaml").write_text(
-        (
-            "streaming:\n  enabled: true\ngateway:\n  platforms:\n    feishu:\n"
-            "      extra:\n        app_id: app-a\n        app_secret: secret-a\n"
-        ),
-        encoding="utf-8",
-    )
-    (home_b / "config.yaml").write_text(
-        (
-            "streaming:\n  enabled: true\ngateway:\n  platforms:\n    feishu:\n"
-            "      extra:\n        app_id: app-b\n        app_secret: secret-b\n"
-        ),
-        encoding="utf-8",
-    )
-
-    with patch.dict(os.environ, {}, clear=True):
-        cfg_a = Config(home_a)
-        cfg_b = Config(home_b)
-        assert (cfg_a.enabled, cfg_a.feishu_app_id, cfg_a.feishu_app_secret) == (True, "app-a", "secret-a")
-        assert (cfg_b.enabled, cfg_b.feishu_app_id, cfg_b.feishu_app_secret) == (True, "app-b", "secret-b")
-
-
-def test_nested_lark_domain_uses_larksuite_url() -> None:
-    cfg = _make_config(
-        {
-            "gateway": {
-                "platforms": {
-                    "lark": {
-                        "extra": {
-                            "app_id": "lark-id",
-                            "app_secret": "lark-secret",
-                            "domain": "lark",
-                        }
-                    }
-                }
-            }
-        }
-    )
-
-    with patch.dict(os.environ, {}, clear=True):
-        assert cfg.feishu_base_url == "https://open.larksuite.com"
+@pytest.mark.parametrize("content", ["[]", "null", "42"])
+def test_non_mapping_root_uses_display_defaults(tmp_path, content) -> None:
+    (tmp_path / "config.yaml").write_text(content)
+    config = Config(tmp_path)
+    assert config.show_tool_use is True
+    assert config.show_reasoning is False

@@ -44,7 +44,7 @@ class TestSplitReasoningText:
         text = f"<{tag}>{reasoning}</{tag}>{answer}"
         result = split_reasoning_text(text)
         assert result["reasoning_text"] == reasoning
-        assert answer in result["answer_text"]
+        assert result["answer_text"] == answer
 
     def test_tags_with_whitespace(self) -> None:
         text = "< thinking >content< /thinking >rest"
@@ -55,8 +55,7 @@ class TestSplitReasoningText:
         text = "<thinking>ongoing reasoning"
         result = split_reasoning_text(text)
         assert result["reasoning_text"] == "ongoing reasoning"
-        # reasoning_text 和 answer_text 都包含内容
-        assert result["answer_text"] is not None
+        assert result["answer_text"] is None
 
 
 class TestExtractThinkingContent:
@@ -82,18 +81,14 @@ class TestExtractThinkingContent:
 
 class TestStripReasoningTags:
     def test_removes_tag_markers(self) -> None:
-        # 标签被移除，但标签间内容保留
         result = strip_reasoning_tags("<thinking>content</thinking>")
         assert "<thinking>" not in result
-        assert "</thinking>" not in result
+        assert result == ""
 
     def test_mixed_text_keeps_surrounding(self) -> None:
         text = "before<thinking>inner</thinking>after"
         result = strip_reasoning_tags(text)
-        assert "before" in result
-        assert "after" in result
-        # 标签标记被移除
-        assert "<thinking>" not in result
+        assert result == "beforeafter"
 
     def test_no_tags_unchanged(self) -> None:
         assert strip_reasoning_tags("no tags here") == "no tags here"

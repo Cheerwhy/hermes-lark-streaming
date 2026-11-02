@@ -1,0 +1,4 @@
+include plugin.yaml __init__.py MIGRATION.md README.en.md CHANGELOG.md AGENTS.md
+include tests/conftest.py
+recursive-include assets *.jpg
+include scripts/feishu_smoke.py

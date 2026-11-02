@@ -6,7 +6,8 @@ build/
 .env
 *.bak
 .eggs/
-tests/samples/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+.hermes-test-source/

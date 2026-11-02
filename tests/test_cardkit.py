@@ -205,14 +205,6 @@ class TestBuildFooterElements:
         result = _build_footer_elements({"model": "claude-3"}, fields=[["model"]])
         assert "claude-3" in result[1]["content"]
 
-    def test_context_displayed(self) -> None:
-        result = _build_footer_elements(
-            {"context_used": 50000, "context_max": 200000},
-            fields=[["context"]],
-        )
-        assert "50.0K" in result[1]["content"]
-        assert "25%" in result[1]["content"]
-
     def test_tokens_displayed(self) -> None:
         result = _build_footer_elements(
             {"input_tokens": 1000, "output_tokens": 500},
@@ -220,6 +212,38 @@ class TestBuildFooterElements:
         )
         assert "↑" in result[1]["content"]
         assert "↓" in result[1]["content"]
+
+    def test_default_footer_has_single_row_with_context(self) -> None:
+        result = _build_footer_elements({
+            "duration": 5, "prompt_tokens": 20000, "context_length": 80000,
+            "input_tokens": 3000, "output_tokens": 150, "model": "test-model",
+        })
+        assert result[1]["content"] == "✅ Completed · 5.0s · 20.0K/80.0K (25%) · test-model"
+
+    @pytest.mark.parametrize("show_label", [False, True])
+    def test_context_labels(self, show_label: bool) -> None:
+        result = _build_footer_elements(
+            {"prompt_tokens": 20000, "context_length": 80000},
+            fields=[["context"]], show_label=show_label,
+        )
+        text = result[1]["i18n_content"]
+        assert "20.0K" in text["en_us"]
+        assert ("Context" in text["en_us"]) == show_label
+        assert ("上下文" in text["zh_cn"]) == show_label
+
+    @pytest.mark.parametrize("data", [
+        {}, {"context_length": 80000}, {"prompt_tokens": 20000},
+        {"prompt_tokens": 20000, "context_length": 0},
+        {"prompt_tokens": -1, "context_length": 80000},
+    ])
+    def test_context_without_valid_pair_is_omitted(self, data: dict) -> None:
+        assert _build_footer_elements(data, fields=[["context"]]) == []
+
+    def test_zero_prompt_and_context_limit(self) -> None:
+        zero = _build_footer_elements({"prompt_tokens": 0, "context_length": 80000}, fields=[["context"]])
+        assert zero[1]["content"] == "0/80.0K (0%)"
+        full = _build_footer_elements({"prompt_tokens": 90000, "context_length": 80000}, fields=[["context"]])
+        assert full[1]["content"] == "80.0K/80.0K (100%)"
 
     def test_show_label(self) -> None:
         result = _build_footer_elements(
@@ -489,77 +513,40 @@ class TestBuildSegmentCompleteCard:
         assert len(summary) <= 120
 
 
-class TestBuildCronCard:
+class TestBuildStaticCard:
     def test_basic_card_structure(self) -> None:
-        from hermes_lark_streaming.cardkit.builder import build_cron_card
+        from hermes_lark_streaming.cardkit.builder import build_static_card
 
-        card = build_cron_card("Hello **world**")
+        card = build_static_card("Hello **world**")
         assert card["schema"] == "2.0"
         assert card["body"]["elements"][0]["tag"] == "markdown"
         assert "Hello **world**" in card["body"]["elements"][0]["content"]
 
     def test_summary_from_content(self) -> None:
-        from hermes_lark_streaming.cardkit.builder import build_cron_card
+        from hermes_lark_streaming.cardkit.builder import build_static_card
 
-        card = build_cron_card("Line 1\nLine 2\n" + "x" * 200)
+        card = build_static_card("Line 1\nLine 2\n" + "x" * 200)
         summary = card["config"]["summary"]["content"]
         assert summary.startswith("Line 1 Line 2")
         assert len(summary) <= 120
 
     def test_empty_content(self) -> None:
-        from hermes_lark_streaming.cardkit.builder import build_cron_card
+        from hermes_lark_streaming.cardkit.builder import build_static_card
 
-        card = build_cron_card("")
+        card = build_static_card("")
         assert card["body"]["elements"] == []
 
     def test_table_content_preserved(self) -> None:
-        from hermes_lark_streaming.cardkit.builder import build_cron_card
+        from hermes_lark_streaming.cardkit.builder import build_static_card
 
         content = "| A | B |\n|---|---|\n| 1 | 2 |"
-        card = build_cron_card(content)
+        card = build_static_card(content)
         assert "| A | B |" in card["body"]["elements"][0]["content"]
 
-    def test_header_with_task_name(self) -> None:
-        from hermes_lark_streaming.cardkit.builder import build_cron_card
+    def test_no_header(self) -> None:
+        from hermes_lark_streaming.cardkit.builder import build_static_card
 
-        card = build_cron_card("Hello", task_name="daily-digest")
-        assert card["header"]["title"]["content"] == ":Alarm: daily-digest"
-        assert card["header"]["title"]["tag"] == "lark_md"
-        assert card["header"]["template"] == "blue"
-
-    def test_no_header_without_task_name(self) -> None:
-        from hermes_lark_streaming.cardkit.builder import build_cron_card
-
-        card = build_cron_card("Hello")
-        assert "header" not in card
-
-    def test_header_with_task_name_and_run_time(self) -> None:
-        from hermes_lark_streaming.cardkit.builder import build_cron_card
-
-        card = build_cron_card(
-            "Hello",
-            task_name="daily-digest",
-            run_time="2026-06-10T14:30:00+08:00",
-        )
-        assert card["header"]["title"]["content"] == ":Alarm: daily-digest · 2026-06-10 14:30"
-
-    def test_header_with_run_time_only(self) -> None:
-        from hermes_lark_streaming.cardkit.builder import build_cron_card
-
-        card = build_cron_card("Hello", run_time="2026-06-10T14:30:00+08:00")
-        assert card["header"]["title"]["content"] == ":Alarm: 2026-06-10 14:30"
-
-    def test_header_invalid_run_time_falls_back_to_raw(self) -> None:
-        from hermes_lark_streaming.cardkit.builder import build_cron_card
-
-        card = build_cron_card("Hello", run_time="not-a-date")
-        assert card["header"]["title"]["content"] == ":Alarm: not-a-date"
-
-    def test_header_run_time_without_timezone(self) -> None:
-        from hermes_lark_streaming.cardkit.builder import build_cron_card
-
-        card = build_cron_card("Hello", run_time="2026-06-10T14:30:00")
-        assert card["header"]["title"]["content"] == ":Alarm: 2026-06-10 14:30"
+        assert "header" not in build_static_card("Hello")
 
 
 # --- Header ---

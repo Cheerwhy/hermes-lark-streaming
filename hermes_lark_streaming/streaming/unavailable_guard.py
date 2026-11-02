@@ -21,13 +21,13 @@ _TERMINAL_MESSAGE_CODES = {
 
 
 _unavailable_cache: dict[str, dict[str, Any]] = {}
-_UNENHANCED_CACHE_TTL_SEC = 30 * 60  # 30 分钟 TTL
+_CACHE_TTL_SEC = 30 * 60  # 30 分钟 TTL
 
 
 def _prune_cache() -> None:
     """清理过期缓存条目."""
     now = time.time()
-    expired = [k for k, v in _unavailable_cache.items() if now - v.get("at", 0) > _UNENHANCED_CACHE_TTL_SEC]
+    expired = [k for k, v in _unavailable_cache.items() if now - v.get("at", 0) > _CACHE_TTL_SEC]
     for k in expired:
         _unavailable_cache.pop(k, None)
 
@@ -93,9 +93,7 @@ class UnavailableGuard:
         """检查是否应跳过当前操作."""
         if self._terminated:
             return True
-        if not self._reply_to_message_id:
-            return False
-        if is_unavailable(self._reply_to_message_id):
+        if is_unavailable(self._reply_to_message_id) or is_unavailable(self._get_card_message_id()):
             return self.terminate(source)
         return False
 

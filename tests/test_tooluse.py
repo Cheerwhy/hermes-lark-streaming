@@ -48,11 +48,11 @@ class TestRedactInlineSecrets:
 
     def test_flag_secret_redacted(self) -> None:
         result = redact_inline_secrets("--api-key mykey123")
-        assert "[redacted]" in result
+        assert result == "--api-key [redacted]"
 
     def test_flag_equals_redacted(self) -> None:
         result = redact_inline_secrets("--secret=value")
-        assert "[redacted]" in result
+        assert result == "--secret=[redacted]"
 
     def test_nonsensitive_flag_unchanged(self) -> None:
         text = "--output result.txt"

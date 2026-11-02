@@ -1,229 +1,192 @@
 # Hermes Lark Streaming
 
-[![PyPI](https://img.shields.io/badge/python-%E2%89%A53.11-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-%E2%89%A53.11-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Real-time streaming card plugin for [Hermes](https://github.com/NousResearch/hermes-agent) Gateway via Feishu/Lark CardKit v2.0.
+[中文](README.md)
 
-Inspired by [openclaw-lark](https://github.com/larksuite/openclaw-lark) and [hermes-feishu-streaming-card](https://github.com/baileyh8/hermes-feishu-streaming-card).
+![Hermes Lark Streaming](assets/cover.jpg)
 
-[中文文档](README.md)
+Feishu/Lark CardKit 2.0 streaming cards for **Hermes >= 0.22.0**.
 
-![](assets/cover.jpg)
+Version 0.14.0 uses Hermes's native platform registry and stream frame contract. It subclasses the built-in Feishu adapter and keeps the `feishu` platform identity, credentials, authorization, sessions, threads and cron targets. Everything runs inside the Gateway process: no source patches, AST rewriting, monkey-patching or sidecar.
 
----
-
-## Features
-
-- **Streaming output** — AI responses rendered in real-time interactive cards with typewriter effect
-- **Streaming cards** — Dynamically renders thinking, tool calls, and answer elements in event arrival order within a single card
-- **Reasoning display** — Shows model thinking/reasoning content
-- **Tool use tracking** — Live tool call status with standard icons, result/error blocks
-- **CardKit v2.0** — Uses Feishu CardKit streaming API; card creation failures yield to the Hermes Gateway default reply
-- **Completion card** — Final card with token usage, duration, and context info
-- **Card style** — Configurable card header/footer toggle and body/footer text sizes
-- **Message guard** — Auto-terminates updates when message is deleted/recalled
-- **Image resolution** — Detects markdown image references, downloads and re-uploads as Feishu img_key
-- **Abort handling** — Gracefully handles `/stop` command and message interrupts with aborted state card and automatic new session
-- **Cron card delivery** — Delivers scheduled job results as Feishu cards, preserving Markdown rendering
-- **Background task card delivery** — Delivers `/background` (`/btw`) task results as cards, with topic-aware reply
-- **i18n** — Built-in Chinese/English bilingual card text (status, tool panel, thinking labels, etc.) that auto-switches based on Feishu client language
-
----
-
-## Card Rendering
-
-The plugin dynamically renders thinking, tool call, and answer elements in event arrival order, keeping multi-round content in its actual order.
-
-When long conversations or excessive tool steps cause the card to approach Feishu's 200-element limit, it automatically splits into multiple cards: the old card is sealed with complete data, a new card continues output, and only the last card includes the footer. Oversized tool panels are also split at step boundaries.
-
-![](assets/streaming.jpg)
-
----
+The existing card renderer provides reasoning/tool panels, image handling and long-card splitting. Native hooks supply supplemental telemetry; native stream frames are the only source of answer text. The registered standalone sender supports cron deliveries without a running Gateway.
 
 ## Requirements
 
-- Hermes `>= 0.21.1` (2026.9.7) with Feishu/Lark platform configured
-- `Python >= 3.11`
-- `lark-oapi >= 1.4.0` — Feishu/Lark official Python SDK
-- `PyYAML >= 6.0` — YAML parser
-- Feishu app permissions: CardKit read/write, message send & reply, image upload
+- Hermes **>= 0.22.0** with the built-in Feishu channel configured
+- Python >= 3.11; Hermes manages its own runtime environment
+- `lark-oapi >= 1.6.4`, `PyYAML >= 6.0`
+- Feishu app permissions for sending/replying to messages, CardKit access and any media features used
 
----
+Read the [migration guide](MIGRATION.md) before upgrading: remove old injections using the OLD release before installing this version.
 
 ## Installation
 
-For the full installation procedure see [INSTALL.md](INSTALL.md).
-
-### AI Agent install
-
-Have the AI agent connected to Hermes read the installation guide and execute it:
-
-```
-curl https://raw.githubusercontent.com/Cheerwhy/hermes-lark-streaming/main/INSTALL.md
-```
-
----
-
-## Configuration
-
-Add to `~/.hermes/config.yaml`:
-
-```yaml
-streaming:
-  enabled: true
-```
-
-### Credentials
-
-Credentials are resolved in the following order:
-
-| Priority | Source | Variables |
-|----------|--------|-----------|
-| 1 | Environment | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` (or `LARK_APP_ID` / `LARK_APP_SECRET`) |
-| 2 | Config file | `feishu` or `lark` section in `~/.hermes/config.yaml` |
-
-```env
-FEISHU_APP_ID=cli_xxxxx
-FEISHU_APP_SECRET=xxxxx
-```
-
-### Card Style
-
-Customize the appearance of streaming and completion cards with the following options:
-
-```yaml
-streaming:
-  enabled: true
-  width_mode: default   # Card width mode: default / compact / fill, default default
-  header:
-    enabled: true      # Card header, default false
-  body:
-    text_size: normal_v2  # Answer body text size, default normal_v2
-  footer:
-    enabled: true         # Card footer, default true
-    text_size: notation   # Footer text size, default notation
-    fields:
-      - [status, elapsed, context, model]
-    show_label: false
-  panel_expanded: false   # Keep completion panels expanded, default false
-display:
-  platforms:
-    feishu:
-      show_tool_use: true   # Show tool-use panels in streaming and completion cards; default true
-```
-
-**Header** (`streaming.header.enabled`): Controls whether the card displays a status header bar. When enabled, the header auto-themes by state — blue for streaming, green for completed, red for stopped/error. Default: disabled.
-
-**Footer** (`streaming.footer.enabled`): Controls whether the completion card displays a footer metadata bar. Default: enabled.
-
-**Text Size** (`body.text_size` / `footer.text_size`): Valid values include `heading`, `normal`, `normal_v2`, `notation`, etc. See [Feishu docs](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/content-components/plain-text?lang=en-US).
-
-**Footer Fields** (`footer.fields`): A 2D array where each sub-array is one line, fields joined by `·`.
-
-| Field | Description | With Label | Without Label |
-|-------|-------------|------------|---------------|
-| `status` | Completion status | `✅ Completed` | `✅ Completed` |
-| `elapsed` | Time elapsed | `Elapsed 12.3s` | `12.3s` |
-| `model` | Model name | `deepseek-v4-flash` | `deepseek-v4-flash` |
-| `tokens` | Token usage | `↑ 1.2K ↓ 500` | `↑ 1.2K ↓ 500` |
-| `context` | Context window usage | `Context 50K/200K (25%)` | `50K/200K (25%)` |
-
-**Show Label** (`footer.show_label`): Whether to display field labels like "Elapsed", "Context". Default: `false`.
-
-**Panel Expand** (`panel_expanded`): Reasoning and tool panels are collapsed by default in completion cards. Set to `true` to keep them expanded.
-
-**Card Width** (`streaming.width_mode`): Controls card width mode. Allowed values: `default`, `compact`, `fill`. Default: `default`.
-
-**Tool-Use Panel** (`display.platforms.feishu.show_tool_use`): Controls whether tool-use panels are displayed. The platform-specific setting takes precedence over global `display.show_tool_use`. Default: `true`. This setting is reloaded at runtime.
-
----
-
-## CLI Commands
-
 ```bash
-HERMES_PYTHON=~/.hermes/hermes-agent/venv/bin/python3
-$HERMES_PYTHON -m hermes_lark_streaming verify     # Verify compatibility (no file changes)
-$HERMES_PYTHON -m hermes_lark_streaming install    # Inject hooks
-$HERMES_PYTHON -m hermes_lark_streaming uninstall  # Remove hooks
-$HERMES_PYTHON -m hermes_lark_streaming restore    # Restore original files from backup
-$HERMES_PYTHON -m hermes_lark_streaming status     # Show status (incl. Hermes Python/install dir detection)
-```
-
----
-
-## Update
-
-```bash
-cd hermes-lark-streaming
-git pull
-HERMES_PYTHON=~/.hermes/hermes-agent/venv/bin/python3
-$HERMES_PYTHON -m pip install -e .
-$HERMES_PYTHON -m hermes_lark_streaming uninstall   # Remove old injection first
-$HERMES_PYTHON -m hermes_lark_streaming verify
-$HERMES_PYTHON -m hermes_lark_streaming install
+hermes plugins install https://github.com/Cheerwhy/hermes-lark-streaming
+hermes plugins enable hermes-lark-streaming
 hermes gateway restart
 ```
 
----
+For local development, symlink the repository to `~/.hermes/plugins/hermes-lark-streaming`, then enable the plugin and restart as above. Restart the Gateway after source changes.
 
-## Uninstall
+The plugin replaces the `feishu` presentation adapter through the native platform registry. Existing channel settings, credentials, sessions and cron targets stay in place.
+
+## Configuration
+
+Edit the active Hermes profile's `config.yaml` (default: `~/.hermes/config.yaml`). Merge these settings with your existing Feishu connection and access rules.
+
+### Minimal setup
+
+```yaml
+streaming:
+  enabled: true
+
+platforms:
+  feishu:
+    enabled: true
+    extra:
+      card:
+        enabled: true
+
+display:
+  platforms:
+    feishu:
+      tool_progress: 'off'
+      show_tool_use: true
+      show_reasoning: false
+```
+
+Hermes's master switch `streaming.enabled` defaults to `false` and must be enabled. Do not set `streaming.transport: off` or `display.platforms.feishu.streaming: false`.
+
+### Card options
+
+All keys below are relative to `platforms.feishu.extra.card`. Unset values use these defaults. Appearance options apply to streaming cards and their final state; standalone cron and background deliveries use a simple fixed layout.
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `enabled` | `true` | Enable native streaming cards; `false` disables streaming integration, not the entire plugin |
+| `width_mode` | `default` | `default`, `compact` or `fill`; invalid values fall back to `default` |
+| `panel_expanded` | `false` | Keep reasoning and tool panels expanded after completion; otherwise collapse them |
+| `header.enabled` | `false` | Show the status header |
+| `body.text_size` | `normal_v2` | Answer Markdown font size; use a CardKit-supported size token |
+| `footer.enabled` | `true` | Show the final footer |
+| `footer.text_size` | `notation` | Footer font size; use a CardKit-supported size token |
+| `footer.fields` | `[[status, elapsed, context, model]]` | Footer fields and ordering; see below |
+| `footer.show_label` | `false` | Add labels to duration and context |
+
+For example, merge this appearance configuration under your existing `card`:
+
+```yaml
+width_mode: fill
+panel_expanded: true
+header:
+  enabled: true
+body:
+  text_size: normal_v2
+```
+
+### Footer layout
+
+Each inner array in `footer.fields` defines one row; fields within a row are separated by `·`. The following five fields are supported. Fields without data are omitted.
+
+| Field | Content |
+| --- | --- |
+| `status` | Completed, error or stopped |
+| `elapsed` | Card duration |
+| `context` | Latest request's full prompt / host context limit and percentage, including cached input |
+| `tokens` | Accumulated usage for this turn: `↑` uncached input, `↓` output; full input is used if that is all the host provides |
+| `model` | Model name |
+
+For a two-row footer, set this under `platforms.feishu.extra.card`:
+
+```yaml
+footer:
+  enabled: true
+  text_size: notation
+  show_label: true
+  fields:
+    - [status, elapsed]
+    - [tokens, model]
+```
+
+A flat array such as `[status, elapsed]` creates one row. An empty array restores the default layout; use `footer.enabled: false` to hide the footer. `context` is omitted if the prompt count or context limit is unavailable. The default is one row of `[status, elapsed, context, model]`; add `tokens` as needed.
+
+### Reasoning and tools
+
+| Configuration path | Default | Effect |
+| --- | --- | --- |
+| `display.platforms.feishu.show_tool_use` | `true` | Show tool names, short arguments, status and duration; omit full successful results |
+| `display.platforms.feishu.show_reasoning` | `false` | Show reasoning provided by the model; also enable the event switch below |
+| `plugins.stream_reasoning_deltas` | `false` | Allow Hermes to send streaming reasoning events to plugins |
+| `display.platforms.feishu.tool_progress` | Set by Hermes | Set to `'off'` to avoid duplicating the plugin's tool panel with host progress text |
+
+For `show_tool_use` and `show_reasoning`, precedence is Feishu-specific setting → the same key under global `display` → the default above. To display reasoning:
+
+```yaml
+plugins:
+  stream_reasoning_deltas: true
+display:
+  platforms:
+    feishu:
+      show_reasoning: true
+```
+
+Display switches do not restrict tool permissions or make a model provide reasoning it does not emit.
+
+### Applying changes and channel settings
+
+Run `hermes gateway restart` after changing card options or host streaming settings. `show_tool_use` and `show_reasoning` are reread at runtime for subsequent rendering; completed historical cards are not proactively refreshed.
+
+Keep using Hermes's built-in Feishu credentials (`FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_DOMAIN`) and connection/group settings under `platforms.feishu.extra`. Do not place them under `card`. This plugin adds no channel permission settings.
+
+Legacy card options move from `streaming.*` to `platforms.feishu.extra.card`; the global `streaming.enabled` stays in place. Configuration is not automatically migrated; see the [migration guide](MIGRATION.md).
+
+Approval follow-ups are delivered as final static cards under the Hermes 0.22.0 protocol; clarification can reopen streaming. Clarification uses the built-in text reply flow, and approval buttons retain built-in callbacks.
+
+## Card Preview
+
+Streaming answers with reasoning and tool panels; long content automatically splits across cards.
+
+![Streaming card](assets/streaming.jpg)
+
+Stopping with `/stop`:
+
+![Stopped card](assets/abort.jpg)
+
+Interrupting an active response with a new message:
+
+![Interrupted response](assets/interrupt.jpg)
+
+Screenshots show the existing renderer; appearance depends on card settings and the host version. Native integration has passed automated tests; live Feishu acceptance for 0.14.0 is pending.
+
+## Disabling and diagnostics
 
 ```bash
-HERMES_PYTHON=~/.hermes/hermes-agent/venv/bin/python3
-$HERMES_PYTHON -m hermes_lark_streaming uninstall
-$HERMES_PYTHON -m pip uninstall hermes-lark-streaming
+hermes plugins disable hermes-lark-streaming
+hermes gateway restart
 ```
 
----
+Disabling restores built-in Feishu rendering. `python -m hermes_lark_streaming verify` checks local native interfaces and leftover injections without sending messages or changing configuration. The old patch commands `install`, `uninstall` and `restore` have been removed.
 
-## How It Works
+## Development and validation
 
-The plugin injects hook calls into the split gateway modules and `cron/scheduler_delivery.py` via AST patching. All business logic lives in the `hermes_lark_streaming` package.
-
-**Message flow:**
-
-```
-User sends message
-  → Card session created
-  → Streaming updates (tool status, text — throttled)
-  → Image URL async resolution
-  → Completion card (tokens, duration, context)
-```
-
-If a message is deleted/recalled, updates are auto-terminated.
-
-**Interrupt handling:**
-
-- `/stop` abort — User actively stops generation, card shows interrupted state:
-
-![](assets/abort.jpg)
-
-- Message interrupt — User sends a new message while a response is in progress; old card shows interrupted state, and a new streaming card is automatically created for the new message:
-
-![](assets/interrupt.jpg)
-
----
-
-## Notes
-
-- `install` modifies gateway `run_inbound.py`, `run_turn.py`, `run_turn_runner.py`, `run_busy.py` and `cron/scheduler_delivery.py`, creating `.hermes_lark.bak` backups
-- Re-run `verify` + `install` after Hermes updates
-- The plugin complements the built-in Feishu adapter: plugin handles streaming cards, built-in adapter handles message routing
-- Only affects Feishu/Lark platform — other platforms are unaffected
-
-## Development tests
-
-Tests reuse verified Hermes 0.21.1 files in the Git-ignored `tests/samples/` cache,
-downloading missing files from the pinned commit. A complete cache runs offline.
-The manifest stays in Git; the installed Hermes is never changed.
-See the [fixture guide](tests/HERMES_SAMPLES.md) for provenance, checksums and updates.
+Install the plugin and a fixed Hermes 0.22.0 checkout in an isolated development environment, then run:
 
 ```bash
-~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/ -q
-# Optional smoke test of local Hermes, on a disposable copy only
-~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/test_multifile_patcher.py -k installed_hermes --local-hermes -q
+python -m pip install -e '.[dev]'
+python -m ruff check hermes_lark_streaming tests scripts __init__.py
+python -m mypy hermes_lark_streaming scripts
+python -m pytest tests -q
 ```
+
+The plugin reuses the built-in Feishu adapter and host message context, including private interfaces. Recheck compatibility after upgrading Hermes.
+
+CI covers Hermes 0.22.0 and 0.22.5 with mocked Feishu APIs and real Hermes registries and stream consumers. Live Feishu messaging requires separate acceptance testing.
+
+For real outbound checks, set `FEISHU_E2E_APP_ID` and `FEISHU_E2E_APP_SECRET`, then run `python scripts/feishu_smoke.py --chat-id <test-chat-id> --scenario all`. It sends fixed test cards for streaming, sequence recovery, splitting, stopping and static updates; add `--reply-to <message-id>` to check quoted replies. No model or tools run. Inbound permissions, clarification and Cron scheduling still need manual acceptance.
 
 ## Contributors
 
@@ -242,7 +205,7 @@ Thanks to our contributors for their issues and pull requests:
 <a href="https://github.com/wzgrx"><img src="https://avatars.githubusercontent.com/u/39661556?v=4&s=64" width="48" height="48" style="border-radius:50%" /></a>
 <a href="https://github.com/zhaomingcheng01"><img src="https://avatars.githubusercontent.com/u/46734892?v=4&s=64" width="48" height="48" style="border-radius:50%" /></a>
 
----
+Inspired by [openclaw-lark](https://github.com/larksuite/openclaw-lark) and [hermes-feishu-streaming-card](https://github.com/baileyh8/hermes-feishu-streaming-card).
 
 ## License
 

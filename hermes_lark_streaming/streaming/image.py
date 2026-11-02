@@ -47,10 +47,6 @@ class ImageResolver:
             alt = str(m.group(0)).split("](")[0][2:]  # extract alt text
             url = str(m.group(1))
 
-            # 已经是飞书 img_key
-            if url.startswith("img_"):
-                return str(m.group(0))
-
             # 缓存命中
             if url in self._cache:
                 return f"![{alt}]({self._cache[url]})"
