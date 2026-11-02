@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.14.0] - Unreleased
+## [0.14.0] - 2026-11-02
 
 - 改为 Hermes >= 0.22.0 的进程内原生平台插件，保留 `feishu` 平台身份
 - 使用正式流式帧、观察 Hook 和独立发送器，移除全部 AST 注入、源码备份/恢复及旧补丁命令
