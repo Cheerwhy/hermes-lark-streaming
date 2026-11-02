@@ -9,19 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.14.0] - 2026-11-02
 
-- 改为 Hermes >= 0.22.0 的进程内原生平台插件，保留 `feishu` 平台身份
-- 使用正式流式帧、观察 Hook 和独立发送器，移除全部 AST 注入、源码备份/恢复及旧补丁命令
-- 保留既有卡片渲染，新增回合隔离、原生注册/流式消费和独立投递回归测试
-- 卡片样式移至 `platforms.feishu.extra.card`；升级前须使用旧发行包卸载注入
-- 安装说明收敛到 README，旧版升级步骤移至 MIGRATION.md；移除每日 upstream main 检查，保留固定版本 CI
-- 通过原生 Hook 展示上下文占用（含缓存输入）；默认单行布局为 `status`、`elapsed`、`context`、`model`
-- 修复思考文本混入正文、图片上传后不刷新、删除卡片后继续更新及命令参数脱敏保留原值的问题
-- 修复默认光标及结构更新导致的重复流式；工具面板隐藏成功结果正文，参数与错误摘要限制为 200 字
-- 移除按卡龄清理活动回合的 TTL，避免长任务被新消息中断并吞掉后续正文
-- CardKit 序号冲突有限重试，同一操作复用幂等 ID；增加独立的真实飞书出站验收脚本
-- 修复刷新请求期间新正文、思考或图片就绪状态被覆盖的问题；验收脚本检查停止卡片的实际收尾结果
-- 修复工具结果晚于正文时重复创建工具面板的问题，重复工具开始事件保持幂等
-- 澄清结束后更新原卡片的工具状态及等待提示
+### 变更
+
+- 要求 Hermes `>= 0.22.0`，改用原生平台注册、流式帧、观察 Hook 和独立发送器，保留 `feishu` 平台身份及既有卡片渲染。(#119)
+- 移除全部 AST 注入、源码备份/恢复及旧补丁命令；升级前须使用旧发行包卸载注入。
+- 卡片样式配置移至 `platforms.feishu.extra.card`；上下文占用使用宿主真实用量（含缓存输入），默认单行页脚为 `status`、`elapsed`、`context`、`model`。
+- 工具面板不再展示成功结果正文，参数与错误摘要限制为 200 字。
+- 安装说明收敛到 README，升级步骤移至 MIGRATION.md；保留既有截图，移除每日 upstream main 检查，改用固定宿主版本 CI。
+
+### 新增
+
+- CardKit 序号冲突有限重试，同一操作复用幂等 ID；增加真实飞书出站验收脚本。
+- 增加回合隔离、原生注册/流式消费、独立投递和渲染回归测试；发布前检查 Hermes 0.22.0 和 0.22.5。
+
+### 修复
+
+- 移除按卡龄清理活动回合的 TTL，避免长任务被新消息中断并吞掉后续正文。
+- 修复默认光标及结构更新导致的重复流式，以及思考文本混入正文的问题。
+- 修复刷新请求期间新正文、思考或图片就绪状态被覆盖、图片上传后不刷新，以及删除卡片后继续更新的问题。
+- 修复工具结果晚于正文时重复创建面板、重复开始事件不幂等，以及澄清结束后原卡片工具状态与等待提示不更新的问题。
+- 修复命令参数脱敏保留原值的问题；验收脚本检查停止卡片的实际收尾结果，避免误报成功。
+
+### Changed
+
+- Require Hermes `>= 0.22.0` and use native platform registration, stream frames, observation hooks, and a standalone sender while preserving the `feishu` identity and existing card renderer. (#119)
+- Remove all AST injection, core-source backup/restore logic, and legacy patch commands. Remove old injections with the OLD release before upgrading.
+- Move card settings to `platforms.feishu.extra.card`. Show context usage from actual host metrics, including cached input; the default single-line footer contains `status`, `elapsed`, `context`, and `model`.
+- Hide successful tool-result bodies and limit argument and error summaries to 200 characters.
+- Consolidate installation instructions in README and upgrade steps in MIGRATION.md. Retain existing screenshots and replace daily upstream-main checks with CI against pinned host versions.
+
+### Added
+
+- Add bounded CardKit sequence-conflict retries that reuse the same operation ID, plus a real Feishu outbound smoke script.
+- Add regression tests for turn isolation, native registration/stream consumption, standalone delivery, and rendering. Check Hermes 0.22.0 and 0.22.5 before publishing.
+
+### Fixed
+
+- Remove age-based active-turn TTL cleanup so new messages cannot terminate long tasks and silently discard later output.
+- Fix repeated streaming caused by cursors and structural updates, and prevent reasoning text from leaking into answers.
+- Preserve answer, reasoning, and image-ready updates arriving during API requests; refresh uploaded images and stop updating deleted cards.
+- Fix duplicate panels for late tool results, make repeated tool-start events idempotent, and update the original card's tool status and waiting prompt after clarification ends.
+- Fix command-argument redaction retaining original values. Verify stop-card completion in the smoke script to avoid false success reports.
 
 ## [0.13.0] - 2026-09-22
 
